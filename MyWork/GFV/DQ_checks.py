@@ -1,6 +1,6 @@
 import pandas as pd
 from google.cloud import storage
-import checks as cfg
+import checks_config as cfg
 import apache_beam as beam
 from datetime import datetime
 import logging
@@ -56,8 +56,9 @@ class Dataquality:
                              |"Removing the unwanted characters in the files data">>beam.ParDo(Unfilterfn())
                              )
         
-        Output_processed_file=(processed_file_read
-                               |"Formatting as csv outputt format">>beam.Map(lambda x:x','.join(x))
+        Output=(processed_file_read
+                               |"Formatting as csv outputt format">>beam.Map(lambda x:','.join(x))
+                               |beam.Map(print)
                                |"Writing to certified zone bucket">>beam.io.WriteToText(f'gs://tnt01-odycda-bld-01-stb-eu-certzone-3067f5f0/{base_path}Proccessed/{self.name[-12:-7]}/{self.name[:-4]}',file_name_suffix=".csv",num_shards=1,shard_name_template='',header=f'{result_keys}')
                                )
         
@@ -81,9 +82,11 @@ class Dataquality:
         logging.info(f"Null check process started for file: {self.name}")
         if self.data.isnull().all():
             logging.error(f" found {self.name} do not have any values")
+            return False
         else:
             null_values=self.data.isnull().sum()
             logging.info(null_values)
+            return True
 
     def volume_check(self):
         logging.info(f"volume check started for {self.name}")
@@ -108,6 +111,8 @@ class Dataquality:
 
         if self.name not in cfg.Book_Map[self.dataset]['files']:
             logging.error(f"The File Name Mismatch Error : Config and Data doesn't match {self.name}")
+            return False
+    
         expected_column=cfg.Book_Map[self.dataset]['schema']
         if set(self.data.colums.tolist())==set(expected_column):
             logging.info(f"Schema Passes For {self.name}")
@@ -125,47 +130,49 @@ def start_data_lister():
     bucket_name="tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181"
     client=storage.Client("tnt01-odycda-bld-01-0b81")
     base_path="thParty/MFVS?GFV/Monthly"
-    dataset=["CPRVAL","CPRRVN","CPRRVU"]
-    for dataset in datasets:
-        folder_path=f'{base_path}'
-        filelist1=[]
-        blobs=client.list_blobs(bucket_name,prefix=folder_path)
-        for blob in blobs:
-            file_value=blob.name
-            filename=file_value.spilt("/"[-1])
-            if blob .name.startswith(folder_path) & filename.startswith(dataset):
-                try:
-                    df1=pd.read_csv(f'gs://{bucket_name}/{blob.name}', skiprows=1, names=cfg.Book_Map[dataset]['schema']
+    blobs = client.list_blobs(bucket_name, prefix=base_path)
+
+    for blob in blobs:
+        try:
+            if blob.name.endswith('.csv'):
+                file_value=blob.name
+                filename=file_value.spilt("/"[-1])
+                dataset = filename[:6]
+                if dataset in cfg.Book_Map:
+                    df1=pd.read_csv(f'gs://{bucket_name}/{blob.name}', skiprows=1, names=cfg.Book_Map[dataset]['schema'])
                     logging.info(f"Quality checks for {filename}")
                     Dataquality
                     checker=Dataquality(df1,filename,dataset)
-                    if(checker.volume_check()):
-                      logging.info(f"volume check passed {filename}")
-                      logging.info(f"{filename} Passed all checks moving {filename} to processed folder.")
-                      checker.processed(bucket_name,base_path)
-                      logging.info(f"Data cleaning started {filename}")
-                      checker.activate_data_cleaning(bucket_name,base_path)
-                      logging.info(f"Data cleaning completed {filename}")
+                    if(checker.volume_check() and checker.schema_check() and checker.null_check()):
+                        logging.info(f"volume check passed {filename}")
+                        logging.info(f"{filename} Passed all checks moving {filename} to processed folder.")
+                        checker.processed(bucket_name,base_path)
+                        logging.info(f"Data cleaning started {filename}")
+                        checker.activate_data_cleaning(bucket_name,base_path)
+                        logging.info(f"Data cleaning completed {filename}")
                     else:
                         logging.error(f"Volume Check Failed for {filename}")
                         checker.unprocessed(bucket_name,base_path,dataset)
-                except Exception as e :
-                    logging.error(f"Error occured while processing the data {filename}")
-                    logging.error(f"(e) on the {filename}")
+                else:
+                    logging.error(f"Dataset {dataset} not found in config file")
             else:
-                logging.warning(f"File looking for file {dataset}, the current file is{filename}.")
-    def read_log_files(gcs_path,log_path):
-        print("Pushing log file to Raw zone")
-        bucket_name="tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181"
-        client = storage.Client()
-        try:
-            bucket = client.get_bucket(bucket_name)
-            blob  = bucket.blob(gcs_path)
-            blob.upload_from_filename(log_path)
-            logging.info(f'logging added to {bucket_name}/{gcs_path}')
-        except Exception as e:
-            logging.exception(f'An error occurred while uploading a file to {bucket_name},{e}')
-        return("Pushed log files to Raw zone")
+                logging.error(f"File type not supported")
+        except Exception as e :
+                logging.error(f"Error occured while processing the data {filename}")
+                logging.error(f"(e) on the {filename}")
+            
+def read_log_files(gcs_path,log_path):
+    print("Pushing log file to Raw zone")
+    bucket_name="tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181"
+    client = storage.Client()
+    try:
+        bucket = client.get_bucket(bucket_name)
+        blob  = bucket.blob(gcs_path)
+        blob.upload_from_filename(log_path)
+        logging.info(f'logging added to {bucket_name}/{gcs_path}')
+    except Exception as e:
+        logging.exception(f'An error occurred while uploading a file to {bucket_name},{e}')
+    return("Pushed log files to Raw zone")
 
 if  __name__ == "__main__":
     print("starting the Data lister")
