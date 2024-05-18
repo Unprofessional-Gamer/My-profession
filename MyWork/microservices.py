@@ -7,7 +7,7 @@ import subprocess
 app = Flask(__name__)
 
 # intialize gcs and BQ client
-project_id = ""
+project_id = "tnt01-odycda-bld-01-1b81"
 
 @app.route('/')
 def hello_world():
