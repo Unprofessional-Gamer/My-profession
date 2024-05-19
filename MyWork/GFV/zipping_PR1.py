@@ -84,7 +84,7 @@ def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, c
 if __name__ == "__main__":
 
     # Define Google Cloud Storage bucket names
-    project_id = 'tnt01-odycda-bld-01-c08e'
+    project_id = 'tnt01-odycda-bld-01-1b81'
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
     consumer_bucket_name = "tnt1092gisnnd872391a"
 
