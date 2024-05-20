@@ -5,6 +5,21 @@ from datetime import datetime
 import pandas as pd
 import os
 
+MONTH_MAPPING = {
+    "01": "Jan",
+    "02": "Feb",
+    "03": "Mar",
+    "04": "Apr",
+    "05": "May",
+    "06": "Jun",
+    "07": "Jul",
+    "08": "Aug",
+    "09": "Sep",
+    "10": "Oct",
+    "11": "Nov",
+    "12": "Dec"
+}
+
 def extract_date_from_filename(filename):
     """Extract date from the filename."""
     date_str = filename.split('-')[-1].split('.')[0]
@@ -31,12 +46,13 @@ def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_
             if blob.name.endswith('.csv'):
                 i += 1
                 date = extract_date_from_filename(blob.name)
-                folder_name = date[:4] + '/' + date[5:7] + '/Processed'
+                month_folder = MONTH_MAPPING[date[5:7]]
+                folder_name = f"{date[:4]}/{month_folder}/Processed"
                 naming_convention = check_naming_convention(blob.name, date)
                 file_name = blob.name.split('/')[-1]
                 
                 if naming_convention is not None:
-                    folder_name = os.path.join(consumer_folder_path, folder_name, naming_convention).replace("\\", "/")
+                    folder_name = os.path.join(consumer_folder_path, folder_name).replace("\\", "/")
                     if folder_name not in zip_buffer:
                         zip_buffer[folder_name] = io.BytesIO()
                     csv_data = blob.download_as_bytes()
@@ -75,7 +91,8 @@ def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, c
         if blob.name.endswith(".csv"):
             file_name = blob.name.split("/")[-1]
             date = extract_date_from_filename(file_name)
-            folder_date = date[:4] + '/' + date[5:7] + '/Processed'
+            month_folder = MONTH_MAPPING[date[5:7]]
+            folder_date = f"{date[:4]}/{month_folder}/Processed"
             print(folder_date)
             df1 = pd.read_csv(io.BytesIO(blob.download_as_bytes()), skiprows=1)
             consumer_bucket.blob(f"{consumer_folder_path}/{folder_date}/{file_name}").upload_from_string(df1.to_csv(index=False), 'text/csv')
