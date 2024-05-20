@@ -352,7 +352,8 @@ def run(project_id, bq_dataset, bucket_name, base_path, file_name):
                  | "Splitting the data into computational units" >> beam.Map(lambda x: x.split(","))
                  | "Formatting column into key value pair" >> beam.Map(convert_key_val_gfvnew)
                  | beam.Map(print)  # Temporary printing, replace with desired processing
-                 | "Pushing the Gfv data to bigquery">>beam.io.WriteToBigQuery(table=CPRRVN_GFV_DATA_table_spec, schema=CPRRVN_Data_schema, create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED, write_disposition=beam.io.BigQueryDisposition.WRITE_TRUNCATE) )
+                # | "Pushing the Gfv data to bigquery">>beam.io.WriteToBigQuery(table=CPRRVN_GFV_DATA_table_spec, schema=CPRRVN_Data_schema, create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED, write_disposition=beam.io.BigQueryDisposition.WRITE_TRUNCATE) 
+                 )
 
 if __name__ == '_main__':
     project_id = 'tnt01-odycda-bld-01-1b81'
