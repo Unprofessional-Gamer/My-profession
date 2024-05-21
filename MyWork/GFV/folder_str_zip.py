@@ -20,7 +20,7 @@ MONTH_MAPPING = {
     "12": "Dec"
 }
 
-def extract_date_from_filename(filename):
+def extract_date_from_filename(self, filename):
     """Extract date from the filename."""
     date_str = filename.split('-')[-1].split('.')[0]
     date_str = date_str[:8]
@@ -29,7 +29,7 @@ def extract_date_from_filename(filename):
     else:
         return datetime.now().strftime('%Y-%m-%d')
 
-def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
+def zip_and_transfer_csv_files(storage_clinet, raw_zone_bucket, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     """Zip specified files into a ZIP folder."""
     
     blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_folder_path))
@@ -39,45 +39,45 @@ def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_
         return
     
     try:
-        # create memory zip
+        # creaet memory zip
         zip_buffer = {}
-        i = 0
+        i=0
         for blob in blob_list:
             if blob.name.endswith('.csv'):
-                i += 1
-                date = extract_date_from_filename(blob.name)
-                month_folder = MONTH_MAPPING[date[5:7]]
-                folder_name = f"{date[:4]}/{month_folder}/Processed"
-                naming_convention = check_naming_convention(blob.name, date)
-                file_name = blob.name.split('/')[-1]
-                
-                if naming_convention is not None:
-                    folder_name = os.path.join(consumer_folder_path, folder_name).replace("\\", "/")
-                    if folder_name not in zip_buffer:
-                        zip_buffer[folder_name] = io.BytesIO()
-                    csv_data = blob.download_as_bytes()
-                    with zipfile.ZipFile(zip_buffer[folder_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
-                        zipf.writestr(os.path.basename(blob.name), csv_data)
+                i = i+1
+            date = extract_date_from_filename(blob.name)
+            month_folder = MONTH_MAPPING[date[5:7]]
+            folder_name = f"{date[:4]}/{month_folder}/Processed"
+            naming_convention = check_naming_convention(blob.name,date)
+            file_name = blob.name.split('/')[-1]
+            if naming_convention is not None:
+                folder_name = os.path.join(consumer_folder_path,folder_name).replace("\\","/")
+                folder_name = os.path.join(folder_name, naming_convention).replace("\\","/")
+                if folder_name not in zip_buffer:
+                    zip_buffer[folder_name] = io.BytesIO()
+                csv_data = blob.download_as_bytes()
+                with zipfile.ZipFile(zip_buffer[folder_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.writestr(os.path.basename(blob.name), csv_data)
 
-                else:
-                    folder_name = os.path.join(consumer_folder_path, folder_name).replace("\\", "/")
-                    df1 = pd.read_csv(io.BytesIO(blob.download_as_bytes()), skiprows=1)
-                    consumer_bucket = storage_client.bucket(consumer_bucket_name)
-                    consumer_bucket.blob(f"{folder_name}/{file_name}").upload_from_string(df1.to_csv(index=False), 'text/csv')
-                    print(f"Moved {file_name} as a CSV file to {folder_name}/{file_name}")
+            else:
+                folder_name = os.path.join(consumer_folder_path, folder_name).replace("\\","/")
+                df1=pd.read_csv(f"gs://tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a/{raw_zone_folder_path}/{file_name}",skiprows=1)
+                consumer_bucket = storage_clinet.bucket(consumer_bucket_name)
+                consumer_bucket.blob(f"{folder_name}/{file_name}").upload_from_string(df1.to_csv(index=False), 'text/csv')
+                print(f"moved {file_name} as a csv file {folder_name}/{file_name}")
 
         for folder_name, zip_buffer in zip_buffer.items():
             zip_buffer.seek(0)
-            consumer_bucket = storage_client.bucket(consumer_bucket_name)
+            consumer_bucket = storage_clinet.bucket(consumer_bucket_name)
             zip_blob = consumer_bucket.blob(os.path.join(folder_name + ".zip"))
-            print(f"Zipped blob is: {zip_blob}")
+            print(f"zipped blob is : {zip_blob}")
             zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-        print(f"Uploaded {zip_blob.name} to {consumer_bucket_name}")
+        print(f"uploaded {zip_blob.name} to {consumer_bucket_name}")
     except Exception as k:
-        print(f"Error in {file_name}: {k}")
+            print(f"Error in {file_name} : {k}")
 
-def check_naming_convention(filename, date):
-    date_format = date.replace('-', '')
+def check_naming_convention(filename,date):
+    date_format = date[:4]+date[5:7]+date[8:]
     if 'CPRNEW' in filename or 'CDENEW' in filename:
         return f"{date_format}-CarsNvpo-csv"
     elif 'CPRVAL' in filename or 'CDEVAL' in filename:
@@ -88,21 +88,23 @@ def check_naming_convention(filename, date):
 def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
     blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
     for blob in blob_list:
-        if blob.name.endswith(".csv"):
+        file_name = blob.name.split("/")[-1]
+        if "GFV" in file_name:
             file_name = blob.name.split("/")[-1]
-            date = extract_date_from_filename(file_name)
+            date=extract_date_from_filename(file_name)
             month_folder = MONTH_MAPPING[date[5:7]]
-            folder_date = f"{date[:4]}/{month_folder}/Processed"
-            print(folder_date)
-            df1 = pd.read_csv(io.BytesIO(blob.download_as_bytes()), skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{folder_date}/{file_name}").upload_from_string(df1.to_csv(index=False), 'text/csv')
+            folder_name = f"{date[:4]}/{month_folder}/Processed"
+            print(folder_name)
+            df1=pd.read_csv(f"gs://tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a/{raw_zone_csv_path}/{file_name}",skiprows=1)
+            consumer_bucket.blob(f"{consumer_folder_path}/{folder_name}/{file_name}").upload_from_string(df1.to_csv(index=False), 'text/csv')
+
 
 if __name__ == "__main__":
 
     # Define Google Cloud Storage bucket names
     project_id = 'tnt01-odycda-bld-01-1b81'
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
-    consumer_bucket_name = "tnt1092gisnnd872391a"
+    consumer_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
 
     sfg_base_path = "thParty/GFV/Monthly/SFGDrop" # ----------> SFG file drop
     staging_folder_path = "thparty/thParty/GFV/Monthly/Dummy_data" # Raw zone file staging
@@ -110,11 +112,13 @@ if __name__ == "__main__":
     storage_client = storage.Client(project=project_id)
     raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
 
-    consumer_folder_path = 'thParty/GFV/Monthly'
+    consumer_folder_path = 'thParty/GFV/Monthly/'
     raw_zone_zip_path = f"{sfg_base_path}" # files to be zipped from raw zone
+    raw_zone_csv_path = f"{staging_folder_path}/GFV_files" # GFV files to be moved as csv 
 
     consumer_bucket = storage_client.bucket(consumer_bucket_name)
     print("******************************Zipping Started*********************")
     zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
-    print("**********************Zipping Completed********************************")
-    print("*********** CSV Files Loaded Successfully ****************")
+    print("**********************ZIpping Completed********************************")
+   
+
