@@ -6,7 +6,6 @@ import pandas as pd
 import os
 from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
-from apache_beam.io.fileio import MatchFiles, ReadMatches
 
 MONTH_MAPPING = {
     "01": "Jan",
@@ -137,8 +136,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     with beam.Pipeline(options=options) as pipeline:
         files = (
             pipeline
-            | 'List files' >> MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
-            | 'Read matches' >> ReadMatches()
+            | 'List files' >> beam.io.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
             | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
             | 'Process files' >> beam.Map(process_blob)
         )
@@ -156,4 +154,12 @@ if __name__ == "__main__":
     raw_zone_csv_path = f"{staging_folder_path}/GFV_files"
 
     storage_client = storage.Client(project=project_id)
-    raw_zone_bucket = storage_client.bucket(raw_zone_bucket
+    raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
+    consumer_bucket = storage_client.bucket(consumer_bucket_name)
+
+    print("****************************** Zipping Started ******************************")
+    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+    print("****************************** Zipping Completed ******************************")
+    print("****************************** CSV Files Loaded Successfully ******************************")
+
+    run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
