@@ -76,7 +76,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
-        temp_location=f'gs://{raw_zone_bucket_name}/temp',
+        #temp_location=f'gs://{raw_zone_bucket_name}/temp',
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
