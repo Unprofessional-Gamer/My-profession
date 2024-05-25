@@ -1,98 +1,79 @@
-from google.cloud import storage
-import zipfile
-import io
-from datetime import datetime
-import pandas as pd
-import os
-from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
-from apache_beam.io.fileio import MatchFiles, ReadMatches
+from apache_beam.options.pipeline_options import PipelineOptions
+from google.cloud import storage
+import pandas as pd
+import logging
+import re
 
-MONTH_MAPPING = {
-    "01": "Jan",
-    "02": "Feb",
-    "03": "Mar",
-    "04": "Apr",
-    "05": "May",
-    "06": "Jun",
-    "07": "Jul",
-    "08": "Aug",
-    "09": "Sep",
-    "10": "Oct",
-    "11": "Nov",
-    "12": "Dec"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Configuration for schemas and filenames
+SCHEMA_MAP = {
+    'file1.csv': ['col1', 'col2', 'col3'],
+    'file2.csv': ['colA', 'colB', 'colC'],
+    # Add more mappings as needed
 }
+MIN_VOLUME = 100
+SPECIAL_CHARACTERS = re.compile(r'[@_!#$%^&*()<>?/|}{~:]')
 
-def extract_date_from_filename(filename):
-    """Extract date from the filename."""
-    date_str = filename.split('-')[-1].split('.')[0]
-    date_str = date_str[:8]
-    if len(date_str) == 8 and date_str.isdigit():
-        return datetime.strptime(date_str, '%Y%m%d').strftime('%Y-%m-%d')
-    else:
-        return datetime.now().strftime('%Y-%m-%d')
+class CheckSchema(beam.DoFn):
+    def process(self, element, schema_map):
+        filename, content = element
+        expected_schema = schema_map.get(filename)
+        if not expected_schema:
+            raise ValueError(f"No schema defined for file {filename}")
+        df = pd.read_csv(pd.compat.StringIO(content))
+        if list(df.columns) == expected_schema:
+            yield element
+        else:
+            raise ValueError(f"Schema mismatch in file {filename}")
 
-def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
-    """Zip specified files into a ZIP folder."""
-    
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_folder_path))
+class CheckNullValues(beam.DoFn):
+    def process(self, element):
+        filename, content = element
+        df = pd.read_csv(pd.compat.StringIO(content))
+        if df.isnull().values.any():
+            raise ValueError(f"Null values found in file {filename}")
+        else:
+            yield element
 
-    if not blob_list:
-        print(f"No files found in {raw_zone_folder_path}.")
-        return
-    
+class CheckVolume(beam.DoFn):
+    def process(self, element):
+        filename, content = element
+        df = pd.read_csv(pd.compat.StringIO(content))
+        if len(df) < MIN_VOLUME:
+            raise ValueError(f"File {filename} has less than {MIN_VOLUME} records")
+        else:
+            yield element
+
+class CheckSpecialCharacters(beam.DoFn):
+    def process(self, element):
+        filename, content = element
+        df = pd.read_csv(pd.compat.StringIO(content))
+        if df.applymap(lambda x: bool(SPECIAL_CHARACTERS.search(str(x)))).any().any():
+            raise ValueError(f"Special characters found in file {filename}")
+        else:
+            yield element
+
+def process_file(element, cerify_bucket_name, processed_folder, error_folder):
+    from google.cloud import storage
+
+    filename, content = element
+    storage_client = storage.Client()
+    consumer_bucket = storage_client.bucket(cerify_bucket_name)
+
     try:
-        # create memory zip
-        zip_buffer = {}
-        for blob in blob_list:
-            if blob.name.endswith('.csv'):
-                date = extract_date_from_filename(blob.name)
-                naming_convention = check_naming_convention(blob.name, date)
-                file_name = blob.name.split('/')[-1]
-                if naming_convention is not None:
-                    zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
-                    if zip_name not in zip_buffer:
-                        zip_buffer[zip_name] = io.BytesIO()
-                    csv_data = blob.download_as_bytes()
-                    with zipfile.ZipFile(zip_buffer[zip_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
-                        zipf.writestr(os.path.basename(blob.name), csv_data)
-                else:
-                    df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_folder_path}/{file_name}", skiprows=1)
-                    consumer_bucket = storage_client.bucket(consumer_bucket_name)
-                    consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-                    print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
-
-        for zip_name, zip_buffer in zip_buffer.items():
-            zip_buffer.seek(0)
-            consumer_bucket = storage_client.bucket(consumer_bucket_name)
-            zip_blob = consumer_bucket.blob(zip_name + ".zip")
-            print(f"Zipped blob is: {zip_blob}")
-            zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-        print(f"Uploaded files to {consumer_bucket_name} successfully.")
+        df = pd.read_csv(pd.compat.StringIO(content))
+        processed_blob = consumer_bucket.blob(f"{processed_folder}/{filename}")
+        processed_blob.upload_from_string(df.to_csv(index=False), content_type='text/csv')
+        logging.info(f"Processed and uploaded {filename} to {processed_folder}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        error_blob = consumer_bucket.blob(f"{error_folder}/{filename}")
+        error_blob.upload_from_string(content, content_type='text/csv')
+        logging.error(f"Error processing file {filename}: {e}")
 
-def check_naming_convention(filename, date):
-    date_format = date.replace('-', '')
-    if 'CPRNEW' in filename or 'CDENEW' in filename:
-        return f"{date_format}-CarsNvpo-csv"
-    elif 'CPRVAL' in filename or 'CDEVAL' in filename:
-        return f"{date_format}-BlackBookCodesAndDescription-csv"
-    else:
-        return None
-
-def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
-    for blob in blob_list:
-        file_name = blob.name.split("/")[-1]
-        if "GFV" in file_name:
-            date = extract_date_from_filename(file_name)
-            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_csv_path}/{file_name}", skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-            print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
-
-def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
+def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, cerify_bucket_name, certify_folder_path):
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
@@ -108,52 +89,37 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
         autoscaling_algorithm='THROUGHPUT_BASED',
         save_main_session=True
     )
+    
+    processed_folder = f"{certify_folder_path}/Processed"
+    error_folder = f"{certify_folder_path}/Error"
 
-    def process_blob(blob_name):
-        storage_client = storage.Client(project=project_id)
-        raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
-        consumer_bucket = storage_client.bucket(consumer_bucket_name)
-        
-        blob = raw_zone_bucket.blob(blob_name)
-        date = extract_date_from_filename(blob_name)
-        naming_convention = check_naming_convention(blob_name, date)
-        file_name = blob_name.split('/')[-1]
-        
-        if naming_convention is not None:
-            zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
-            zip_buffer = io.BytesIO()
-            csv_data = blob.download_as_bytes()
-            with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
-                zipf.writestr(file_name, csv_data)
-            zip_buffer.seek(0)
-            zip_blob = consumer_bucket.blob(zip_name + ".zip")
-            zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-        else:
-            df = pd.read_csv(f"gs://{raw_zone_bucket_name}/{blob_name}", skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-        
-        return f"Processed {blob_name}"
+    p = beam.Pipeline(options=options)
 
-    with beam.Pipeline(options=options) as pipeline:
-        files = (
-            pipeline
-            | 'List files' >> MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
-            | 'Read matches' >> ReadMatches()
-            | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
-            | 'Process files' >> beam.Map(process_blob)
-        )
+    raw_zone_bucket = storage.Client().bucket(raw_zone_bucket_name)
+    blobs = list(raw_zone_bucket.list_blobs(prefix=raw_zone_folder_path))
+
+    files = [(blob.name.split('/')[-1], blob.download_as_string().decode('utf-8')) for blob in blobs if blob.name.endswith('.csv')]
+
+    (p
+     | "CreateFileList" >> beam.Create(files)
+     | "CheckSchema" >> beam.ParDo(CheckSchema(), schema_map=SCHEMA_MAP)
+     | "CheckNullValues" >> beam.ParDo(CheckNullValues())
+     | "CheckVolume" >> beam.ParDo(CheckVolume())
+     | "CheckSpecialCharacters" >> beam.ParDo(CheckSpecialCharacters())
+     | "ProcessAndUpload" >> beam.Map(process_file, cerify_bucket_name=cerify_bucket_name, processed_folder=processed_folder, error_folder=error_folder)
+    )
+
+    result = p.run()
+    result.wait_until_finish()
 
 if __name__ == "__main__":
     project_id = 'tnt01-odycda-bld-01-1b81'
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
-    consumer_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
+    cerify_bucket_name = "tnt1092gisnnd872391a"
+    
+    raw_zone_folder_path = "thParty/GFV/Monthly/SFGDrop"
+    certify_folder_path = 'thParty/GFV/Monthly/'
 
-    sfg_base_path = "thParty/GFV/Monthly/SFGDrop" 
-    staging_folder_path = "thparty/thParty/GFV/Monthly/Dummy_data" 
-
-    consumer_folder_path = 'thParty/GFV/Monthly'
-    raw_zone_zip_path = f"{sfg_base_path}" 
-    raw_zone_csv_path = f"{staging_folder_path}/GFV_files"
-
-    storage_client = storage.Client(project=project_id)
-    raw_zone_bucket = storage_client.bucket(raw_zone_bucket
+    logging.info("Starting the Dataflow pipeline")
+    run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, cerify_bucket_name, certify_folder_path)
+    logging.info("Dataflow pipeline completed")

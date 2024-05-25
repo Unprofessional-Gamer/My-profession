@@ -7,21 +7,8 @@ import os
 from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
 from apache_beam.io.fileio import MatchFiles, ReadMatches
+from apache_beam import fileio
 
-MONTH_MAPPING = {
-    "01": "Jan",
-    "02": "Feb",
-    "03": "Mar",
-    "04": "Apr",
-    "05": "May",
-    "06": "Jun",
-    "07": "Jul",
-    "08": "Aug",
-    "09": "Sep",
-    "10": "Oct",
-    "11": "Nov",
-    "12": "Dec"
-}
 
 def extract_date_from_filename(filename):
     """Extract date from the filename."""
@@ -86,7 +73,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     with beam.Pipeline(options=options) as pipeline:
         files = (
             pipeline
-            | 'List files' >> MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
+            | 'List files' >> fileio(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
             | 'Read matches' >> ReadMatches()
             | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
             | 'Process files' >> beam.Map(process_blob)
