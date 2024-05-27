@@ -1,190 +1,108 @@
-import pandas as pd
-from google.cloud import storage
-import checks_config as cfg
-import apache_beam as beam
-from datetime import datetime
+import argparse
 import logging
+import re
+import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.io.filesystems import FileSystems
 
-logging.basicConfig(filename='/home/appuser/clean.log', encoding='utf-8', level=logging.INFO, format = '%(asctime)s:%(levelname)s:%(message)s')
-
-class removal_double_quotes(beam.DoFn):
+class DataQualityChecks(beam.DoFn):
+    """Perform data quality checks on each row of the CSV."""
+    
     def process(self, element):
-        custom=[ele.replace('"','')  for ele in element]
-        return [custom]
-    
-class Filterfn(beam.DoFn):
-    def process(self, element):
-        custom=[ele for ele in element]
-        updated_custom=[' 'if ele in ['null','None','Nan',"NONE",'Null','n/a', 'N/A',''] else ele for ele in element]
-        return [updated_custom]
-    
-class Unfilterfn(beam.DoFn):
-    def process(self, element):
-        custom=[ele for ele in element]
-        removetable=str.maketrans('','','#$%^!&+*')
-        updated_custom=[ele.translate(removetable) for ele in custom]
-        return [updated_custom]
-    
-class Dataquality:
-    def __init__(self,data,name,dataset):
-        self.data=data
-        self.name=name
-        self.dataset=dataset
+        row, filename = element
+        columns = row.split(',')
+        errors = []
 
-    def activate_data_cleaning(self,bucket_name,base_path):
+        # Null value check
+        if any(col.strip() == '' for col in columns):
+            errors.append('Null value found')
 
-        keys = self.data.columns.to_list()
-        result_keys= ','.join(keys)
+        # Special character check (allowed special characters are '1234567890-=+')
+        special_char_pattern = re.compile(r'[^\w\s!@#$%^&*()-=+]')
+        if any(special_char_pattern.search(col) for col in columns):
+            errors.append('Special character found')
 
-        argv = [
-            '--project=tnt01-odycda-bld-01-0b81',
-            '--region=europe-west-2',
-            '--runner=DataflowRunner',
-            '--staging_location=gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/External/MFVS/Pricing/Files/2023-03-20/Proccessed/stage',
-            '--temp_location=gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/External/MFVS/Pricing/Files/2023-03-20/Proccessed/temp'
-        ]
-        with beam.Pipeline(argv=argv) as pipe:
-            file_read=(pipe
-                   |'Read data from bucket' >> beam.io.ReadFromText(f'gs://{bucket_name}/{base_path}/Proccessed/{self.name}',skip_header_lines=True)
-                   |'Removing Duplicates from File data' >> beam.Distinct()
-                   )
-        
-        processed_file_read=(file_read
-                             |"splitting the input data into computational units">>beam.Map(lambda x:x.split(','))
-                             |"Making the data into standard iteratable units">>beam.ParDo(removal_double_quotes())
-                             |"Removing Null values in the file data">>beam.ParDo(Filterfn)
-                             |"Removing the unwanted characters in the files data">>beam.ParDo(Unfilterfn())
-                             )
-        
-        Output=(processed_file_read
-                               |"Formatting as csv outputt format">>beam.Map(lambda x:','.join(x))
-                               |beam.Map(print)
-                               |"Writing to certified zone bucket">>beam.io.WriteToText(f'gs://tnt01-odycda-bld-01-stb-eu-certzone-3067f5f0/{base_path}Proccessed/{self.name[-12:-7]}/{self.name[:-4]}',file_name_suffix=".csv",num_shards=1,shard_name_template='',header=f'{result_keys}')
-                               )
-        
-    def unprocessed(self,bucket_name,base_path):
-        storage_client=storage.Client("tnt01-odycda-bld-01-0b81")
-        logging.error(f"Pushing the file to error folder {self.name}")
-        s_bucket = storage_client.bucket(bucket_name)
-        blob = s_bucket.blob(f"{base_path}{bucket_name}")
-        new_blob=s_bucket.copy_blob(blob,s_bucket,f"{base_path}ERROR/{self.name}")
-        logging.error("Pushing the {self.name} to the error folder")
-
-    def processed(self,bucket_name,base_path):
-        storage_client=storage.Client("tnt01-odycda-bld-01-0b81")
-        logging.info(f"Pushing the file to Proccessed folder {self.name}")
-        s_bucket = storage_client.bucket(bucket_name)
-        blob = s_bucket.blob(f"{base_path}{bucket_name}")
-        new_blob=s_bucket.copy_blob(blob,s_bucket,f"{base_path}Processed/{self.name}")
-        logging.error("Pushing the {self.name} to the Processed folder")
-
-    def null_check(self):
-        logging.info(f"Null check process started for file: {self.name}")
-        if self.data.isnull().all():
-            logging.error(f" found {self.name} do not have any values")
-            return False
+        if errors:
+            yield beam.pvalue.TaggedOutput('error', (row, filename))
         else:
-            null_values=self.data.isnull().sum()
-            logging.info(null_values)
-            return True
+            yield (row, filename)
 
-    def volume_check(self):
-        logging.info(f"volume check started for {self.name}")
-        if(len(self.data)==0):
-            logging.error(f"File : {self.name} is empty")
-            return False
-        if len(self.data)<cfg.min_volume:
-            logging.warn(f"File didn't pass volume check : {self.name}")
-            logging.error(f"Received the failed on volume check {self.name}")
-            return False
-        elif len(self.data)>cfg.max_volume:
-            logging.warn(f"File exceeds max volume check : {self.name}")
-            logging.error(f"Received the failed on volume check {self.name}")
-            return False
-        else:
-            logging.info(f"Volume passed for {self.name}")
-            return True
-        
-    def schema_check(self):
-        logging.warn(f"schema check started : {self.name}")
-        logging.error(f"checking Received file {self.name} with config file")
-
-        if self.name not in cfg.Book_Map[self.dataset]['files']:
-            logging.error(f"The File Name Mismatch Error : Config and Data doesn't match {self.name}")
-            return False
+def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
+    """Run the Beam pipeline to perform data quality checks."""
     
-        expected_column=cfg.Book_Map[self.dataset]['schema']
-        if set(self.data.colums.tolist())==set(expected_column):
-            logging.info(f"Schema Passes For {self.name}")
-            logging.info(f"Schema expected: {expected_column}")
-            logging.info(f"Schema received: {self.data.columns.tolist()}")
-            return True
-        else:
-            logging.error(f"Schema check failed for {self.name}")
-            logging.error("Expected Schema: {expected_column}")
-            logging.error(f"Recieved Schema: {self.data.columns.tolist()} ")
-            logging.error(f"Missing columns are: {list(set(self.data.columns.to_list())-set(expected_column))}") 
-            return False
-    
-def start_data_lister():
-    bucket_name="tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181"
-    client=storage.Client("tnt01-odycda-bld-01-0b81")
-    base_path="thParty/MFVS?GFV/Monthly"
-    blobs = client.list_blobs(bucket_name, prefix=base_path)
+    options = PipelineOptions(
+        project=project_id,
+        runner="DataflowRunner",
+        temp_location=f'gs://{raw_zone_bucket_name}/temp',
+        region='europe-west2',
+        staging_location=f'gs://{raw_zone_bucket_name}/staging',
+        service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
+        dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
+        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
+        num_workers=1,
+        max_num_workers=4,
+        use_public_ips=False,
+        autoscaling_algorithm='THROUGHPUT_BASED',
+        save_main_session=True
+    )
 
-    for blob in blobs:
-        try:
-            if blob.name.endswith('.csv'):
-                file_value=blob.name
-                filename=file_value.spilt("/"[-1])
-                dataset = filename[:6]
-                if dataset in cfg.Book_Map:
-                    df1=pd.read_csv(f'gs://{bucket_name}/{blob.name}', skiprows=1, names=cfg.Book_Map[dataset]['schema'])
-                    logging.info(f"Quality checks for {filename}")
-                    Dataquality
-                    checker=Dataquality(df1,filename,dataset)
-                    if(checker.volume_check() and checker.schema_check() and checker.null_check()):
-                        logging.info(f"volume check passed {filename}")
-                        logging.info(f"{filename} Passed all checks moving {filename} to processed folder.")
-                        checker.processed(bucket_name,base_path)
-                        logging.info(f"Data cleaning started {filename}")
-                        checker.activate_data_cleaning(bucket_name,base_path)
-                        logging.info(f"Data cleaning completed {filename}")
-                    else:
-                        logging.error(f"Volume Check Failed for {filename}")
-                        checker.unprocessed(bucket_name,base_path,dataset)
-                else:
-                    logging.error(f"Dataset {dataset} not found in config file")
-            else:
-                logging.error(f"File type not supported")
-        except Exception as e :
-                logging.error(f"Error occured while processing the data {filename}")
-                logging.error(f"(e) on the {filename}")
-            
-def read_log_files(gcs_path,log_path):
-    print("Pushing log file to Raw zone")
-    bucket_name="tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181"
-    client = storage.Client()
-    try:
-        bucket = client.get_bucket(bucket_name)
-        blob  = bucket.blob(gcs_path)
-        blob.upload_from_filename(log_path)
-        logging.info(f'logging added to {bucket_name}/{gcs_path}')
-    except Exception as e:
-        logging.exception(f'An error occurred while uploading a file to {bucket_name},{e}')
-    return("Pushed log files to Raw zone")
+    with beam.Pipeline(options=options) as p:
+        raw_files = (
+            p
+            | 'List Files' >> beam.io.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/*.csv')
+            | 'Read Matches' >> beam.io.ReadMatches()
+            | 'Extract File Path' >> beam.Map(lambda x: x.metadata.path)
+        )
 
-if  __name__ == "__main__":
-    print("starting the Data lister")
-    start_data_lister()
-    print("Data lister completed")
+        rows = (
+            raw_files
+            | 'Read Files' >> beam.FlatMap(read_file_lines)
+        )
 
-    load_date = datetime.today().strftime('%Y-%m-%d-%H: %M:%S')
-    gcs_path = f'thParty/MFVS/GFV/Monthly/logs/{load_date}/GFV_clean.log'
-    log_path ='/home/appuser/clean.log'
-    print("Reading logs")
-    read_log_files(gcs_path,log_path)
-    print("Logs pushed to Raw")
-                              
+        processed, errors = (
+            rows
+            | 'Data Quality Checks' >> beam.ParDo(DataQualityChecks()).with_outputs('error', main='main')
+        )
 
-                                    
+        write_results(processed, consumer_bucket_name, consumer_folder_path, 'Processed')
+        write_results(errors, consumer_bucket_name, consumer_folder_path, 'Error')
+
+def read_file_lines(file_path):
+    """Read lines from a file in GCS."""
+    with FileSystems.open(file_path) as f:
+        for line in f:
+            yield line.decode('utf-8').strip(), file_path
+
+def write_results(results, bucket_name, folder_path, subfolder):
+    """Write the results to GCS."""
+    def get_output_path(element):
+        row, file_path = element
+        filename = file_path.split('/')[-1]
+        return f'gs://{bucket_name}/{folder_path}/{subfolder}/{filename}'
+
+    results | f'Write Results to {subfolder}' >> beam.MapTuple(lambda row, file_path: (row, get_output_path((row, file_path)))) | beam.GroupByKey() | beam.MapTuple(write_to_file)
+
+def write_to_file(rows, output_path):
+    """Write rows to a file in GCS."""
+    with FileSystems.create(output_path) as f:
+        for row in rows:
+            f.write(f"{row}\n".encode('utf-8'))
+
+if __name__ == '__main__':
+
+    logging.getLogger().setLevel(logging.INFO)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--project_id', required=True)
+    parser.add_argument('--raw_zone_bucket_name', required=True)
+    parser.add_argument('--raw_zone_folder_path', required=True)
+    parser.add_argument('--consumer_bucket_name', required=True)
+    parser.add_argument('--consumer_folder_path', required=True)
+    args = parser.parse_args()
+
+    run_pipeline(
+        project_id=args.project_id,
+        raw_zone_bucket_name=args.raw_zone_bucket_name,
+        raw_zone_folder_path=args.raw_zone_folder_path,
+        consumer_bucket_name=args.consumer_bucket_name,
+        consumer_folder_path=args.consumer_folder_path
+    )
