@@ -1,6 +1,6 @@
 import argparse
-import logging
 import re
+
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io.filesystems import FileSystems
@@ -18,7 +18,7 @@ class DataQualityChecks(beam.DoFn):
             errors.append('Null value found')
 
         # Special character check (allowed special characters are '1234567890-=+')
-        special_char_pattern = re.compile(r'[^\w\s!@#$%^&*()-=+]')
+        special_char_pattern = re.compile(r'[^\w\s1234567890-=+]')
         if any(special_char_pattern.search(col) for col in columns):
             errors.append('Special character found')
 
@@ -89,20 +89,26 @@ def write_to_file(rows, output_path):
             f.write(f"{row}\n".encode('utf-8'))
 
 if __name__ == '__main__':
+    print("Starting Data Quality Check Pipeline...")
 
-    logging.getLogger().setLevel(logging.INFO)
     parser = argparse.ArgumentParser()
-    parser.add_argument('--project_id', required=True)
-    parser.add_argument('--raw_zone_bucket_name', required=True)
-    parser.add_argument('--raw_zone_folder_path', required=True)
-    parser.add_argument('--consumer_bucket_name', required=True)
-    parser.add_argument('--consumer_folder_path', required=True)
+    parser.add_argument('--project_id', required=True, help='GCP Project ID')
+    parser.add_argument('--raw_zone_bucket_name', required=True, help='GCS Bucket name for raw zone')
+    parser.add_argument('--raw_zone_folder_path', required=True, help='Folder path in the raw zone bucket')
+    parser.add_argument('--consumer_bucket_name', required=True, help='GCS Bucket name for consumer zone')
+    parser.add_argument('--consumer_folder_path', required=True, help='Folder path in the consumer zone bucket')
     args = parser.parse_args()
 
+    print(f"Project ID: {args.project_id}")
+    print(f"Raw Zone Bucket: {args.raw_zone_bucket_name}/{args.raw_zone_folder_path}")
+    print(f"Consumer Bucket: {args.consumer_bucket_name}/{args.consumer_folder_path}")
+
     run_pipeline(
-        project_id=args.project_id,
-        raw_zone_bucket_name=args.raw_zone_bucket_name,
-        raw_zone_folder_path=args.raw_zone_folder_path,
-        consumer_bucket_name=args.consumer_bucket_name,
-        consumer_folder_path=args.consumer_folder_path
+        project_id=args.project_id,                    # Line 107
+        raw_zone_bucket_name=args.raw_zone_bucket_name, # Line 108
+        raw_zone_folder_path=args.raw_zone_folder_path, # Line 109
+        consumer_bucket_name=args.consumer_bucket_name, # Line 110
+        consumer_folder_path=args.consumer_folder_path  # Line 111
     )
+
+    print("Pipeline execution completed.")
