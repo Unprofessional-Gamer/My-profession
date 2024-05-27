@@ -1,119 +1,341 @@
-import re
-import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions
-from apache_beam.io.filesystems import FileSystems
+from google.cloud import storage
 
-class DataQualityChecks(beam.DoFn):
-    """Perform data quality checks on each row of the CSV."""
+import apache beam as beam
 
-    def process(self, element):
-        row, filename = element
-        columns = row.split(',')
-        errors = []
+from apache beam.options.pipeline options import PipelineOptions
 
-        # Null value check
-        if any(col.strip() == '' for col in columns):
-            errors.append('Null value found')
+class RemoveDoubleQuotes (beam.DoEn):
 
-        # Special character check (allowed special characters are '1234567890-=+')
-        special_char_pattern = re.compile(r'[^\w\s1234567890-=+]')
-        if any(special_char_pattern.search(col) for col in columns):
-            errors.append('Special character found')
+def process(self, element):
 
-        if errors:
-            print(f"Error in row: {row}, Errors: {errors}")
-            yield beam.pvalue.TaggedOutput('error', (row, filename))
-        else:
-            yield (row, filename)
+custom-[ele.replace("','") for ele in element]
 
-def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
-    """Run the Beam pipeline to perform data quality checks."""
+return [custom]
 
-    options = PipelineOptions(
-        project=project_id,
-        runner="DataflowRunner",
-        temp_location=f'gs://{raw_zone_bucket_name}/temp',
-        region='europe-west2',
-        staging_location=f'gs://{raw_zone_bucket_name}/staging',
-        service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
-        dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
-        num_workers=1,
-        max_num_workers=4,
-        use_public_ips=False,
-        autoscaling_algorithm='THROUGHPUT_BASED',
-        save_main_session=True
-    )
+class Filterfo(beam.DoEn):
 
-    with beam.Pipeline(options=options) as p:
-        print("Listing files from GCS...")
-        raw_files = (
-            p
-            | 'List Files' >> beam.io.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/*.csv')
-            | 'Read Matches' >> beam.io.ReadMatches()
-            | 'Extract File Path' >> beam.Map(lambda x: x.metadata.path)
-        )
+def process(self, element):
 
-        print("Reading files...")
-        rows = (
-            raw_files
-            | 'Read Files' >> beam.FlatMap(read_file_lines)
-        )
+updated custom-[if ele in ['null', None, Nan, 'NONE', 'Null','n/ else ele for ele in element]
 
-        print("Performing data quality checks...")
-        processed, errors = (
-            rows
-            | 'Data Quality Checks' >> beam.ParDo(DataQualityChecks()).with_outputs('error', main='main')
-        )
+return [updated_custom]
 
-        print("Writing processed files...")
-        write_results(processed, consumer_bucket_name, consumer_folder_path, 'Processed')
-        print("Writing error files...")
-        write_results(errors, consumer_bucket_name, consumer_folder_path, 'Error')
+class Unfilterfn(beam.DoFn):
 
-def read_file_lines(file_path):
-    """Read lines from a file in GCS."""
-    print(f"Reading file: {file_path}")
-    with FileSystems.open(file_path) as f:
-        for line in f:
-            yield line.decode('utf-8').strip(), file_path
+def process(self, element):
 
-def write_results(results, bucket_name, folder_path, subfolder):
-    """Write the results to GCS."""
-    def get_output_path(element):
-        row, file_path = element
-        filename = file_path.split('/')[-1]
-        return f'gs://{bucket_name}/{folder_path}/{subfolder}/{filename}'
+custom-[ele for ele in element]
 
-    results | f'Write Results to {subfolder}' >> beam.MapTuple(lambda row, file_path: (row, get_output_path((row, file_path)))) | beam.GroupByKey() | beam.MapTuple(write_to_file)
+removetable-str.maketrans(",", "#$%^!&-**)
 
-def write_to_file(rows, output_path):
-    """Write rows to a file in GCS."""
-    print(f"Writing to file: {output_path}")
-    with FileSystems.create(output_path) as f:
-        for row in rows:
-            f.write(f"{row}\n".encode('utf-8'))
+update custom-[ele.translate(removetable) for ele in custom]
 
-if __name__ == '__main__':
-    print("Starting Data Quality Check Pipeline...")
+return [update_custom]
 
-    # Placeholder values
-    project_id = 'tnt01-odycda-bld-01-1b81'  # Line 107
-    raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"  # Line 108
-    raw_zone_folder_path = "thParty/GFV/Monthly/SFGDrop"  # Line 109
-    consumer_bucket_name = "tnt1092gisnnd872391a"  # Line 110
-    consumer_folder_path = 'thParty/GFV/Monthly/'  # Line 111
+def activate data_cleaning(bucket name, base path, dataset, year, file name):
 
-    print(f"Project ID: {project_id}")
-    print(f"Raw Zone Bucket: {raw_zone_bucket_name}/{raw_zone_folder_path}")
-    print(f"Consumer Bucket: {consumer_bucket_name}/{consumer_folder_path}")
+options PipelineOptions( project-tnt01-odycda-bld-01-1681",
 
-    run_pipeline(
-        project_id=project_id,                    # Line 107
-        raw_zone_bucket_name=raw_zone_bucket_name, # Line 108
-        raw_zone_folder_path=raw_zone_folder_path, # Line 109
-        consumer_bucket_name=consumer_bucket_name, # Line 110
-        consumer_folder_path=consumer_folder_path  # Line 111
-    )
+runner "DirectRunner',
 
-    print("Pipeline execution completed.")
+Job name cautocertmove('.join(dataset.split())).lower(),
+
+#temp location'gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/EXTERNAL/MFVS/PRICING/dataflow/temp',
+
+region-europe-west2",
+
+staging location-'gs://tnt01-odycda-bid-01-stb-eu-rawzone-52fd7181/EXTERNAL/MFVS/PRICING/dataflow/staging',
+
+service account email svc-dataflow-runner@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
+
+dataflow kms kay projects/tnt81-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tatei-euwe2-cdp", subnetwork-https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88b/regions/europe-west2/subnetworks/odvcda-csn-euwe2-kc1-01-bld-01'.
+num workers 1,
+
+max_num_workers -3,
+
+use public ips-False,
+
+autoscaling algorithm THROUGHPUT BASED',
+
+save main session-True
+
+)
+
+with beam. Pipeline (options-options) as pipe:
+
+file read (pipe
+
+"Reading the file data "+str(year)+dataset>>beam.io.ReadFromText(f"gs://{bucket_name)/(base_path}(dataset)/Monthly/(year)/PROCESSED/(file_name)") "removing duplicates from the file data "+str(year)+dataset>>beam.Distinct()
+
+)
+
+processed file_read(file_read
+
+| "Splitting the input data into computational units "+str(year)+dataset>>beam.Map(lambda x:x.split(','))
+
+"Making the data into standard iteratabe units "+str(year)+dataset>>beam.ParDo (RemoveDoubleQuotes())
+
+"Removing the null values in file data "+str(year)+dataset>> beam.ParDo (Filterfn())
+
+"Removing the Unwanted characters in file data "+str(year)+dataset>>beam.ParDo (Unfilterfn())
+
+(processed file read
+
+| "Formating as CSV output format "+str(year)+dataset>>beam.Map(lambda x:','.join(x))
+
+#beam.Map(print)
+
+)
+
+"Writing to certified zone received folder "+str(year)+dataset>>beam.lo.WriteToText(f°gs://tnt01-odycda-bld-01-stb-eu- certzone-386745f0/(base_path}(dataset)/Monthly/{year}/RECEIVED/(file_name}',file_name suffix-"", num shards-1, shard_name_template-**)
+
+)
+
+class NullCheck(beam.DoEn):
+
+def process(self, element):
+
+null list-1]
+
+for ele in element:
+
+if ele in ['null', None', 'Han", "NONE", "Hu','*']:
+
+null list.append(ele)
+
+if len(null list) I-len (element):
+
+element.extend(["Passed null check"])
+yield element
+
+else:
+
+element.extend(['Failed null check'])
+
+yield element
+
+class VolumeCheck (beam.DoEn):
+
+def process(self.element,vol_count): if 0<int(vol count)<1000:
+
+element.extend(["Passed volume check"])
+
+yield element
+
+else:
+
+element.extend(['Failed volume check'])
+
+yield element
+
+class Unique(beam.CombineEn):
+
+def create accumulator(self):
+
+return []
+
+def add input(self.accumulator,input): accumulator.append(input)
+
+return accumulator
+
+def merge accumulators(self.accumulators):
+
+merged=[]
+
+for acc in accumulators: for item in acc:
+
+merged.append(item)
+
+return merged
+
+def extract output(self, accumulator):
+
+return accumulator
+
+class UniqueCheck (beam.DoEn):
+
+def process(self, element,unique_cols): if element [0] in unique_cols:
+
+element.extend(['Passed unique check"])
+yield element
+
+else:
+
+element.extend(['Failed unique check'])
+
+yield element
+
+def check pass status (element):
+
+return all('Passed' in item for item in element[-3:])
+
+def check fail status (element):
+
+return any('Failed in item for item in element[-3:])
+
+def start checks (year, dataset):
+
+options PipelineOptions(
+
+project-tnt01-odycda-bld-01-1681',
+
+runner-DirectRunner',
+
+job_name- rawtocertcleaning+('.join(dataset.split())).lower(),
+
+#temp_location='gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/EXTERNAL/MFVS/PRICING/dataflow/temp",
+
+region-europe-west2",
+
+staging location-'gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/EXTERNAL/MFVS/PRICING/dataflow/staging", service account email-svc-dataflow-runner@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com",
+
+dataflow_kms_key- projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptokeys/keyhsm-kms-tnt01-euwe2-cdp", subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88b/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
+
+num workers-1,
+
+max_num workers -3, use public ips-False,
+
+autoscaling algorithm THROUGHPUT_BASED",
+
+save main session-True
+
+) with bean. Pipeline(options-options) as p:
+
+bucket name-tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181" base path- thParty/MFVS/GFV/update/"
+
+folder path-f(base path)(dataset)/Monthly/(year)/RECEIVED/ client-storage.Client("tnt01-odycda-bld-01-1681")
+
+blob list-client.list blobs (bucket name, prefix-folder_path)
+for blob in blob list:
+
+if blob.name.endswith('.csv'):
+
+file name-blob.name.split('/')[-1]
+
+inputt-(p
+
+"Reading the file data "+str(year)+dataset>>beam.io.ReadFromText(f"gs://{bucket_name}/{base_path}(dataset)/Monthly/(year)/RECEIVED/{file_name}") "split values "+str(year)+dataset>> beam.Map(lambda x:x.split(','))
+
+#'print the value'>> beam.Map(print)
+
+) volume count-(inputt
+
+calculate volume count '+str(year)+dataset>> beam.combiners.Count.Globally()
+
+volume check-(inputt
+
+I'volume check +str(year)+dataset>>beam.ParDo (VolumeCheck(),vol_count-beam.pvalue.AsSingleton (volume_count))
+
+)
+
+I
+
+null check (volume check
+
+Filter records +str(year)+dataset>> beam.Filter(lambda x: len(x)>0)
+
+# "print">> beam.Map(print)
+
+null check value '+str(year)+dataset>> beam. ParDo (NullCheck())
+
+unique_elem.count-(null check
+
+I'get the unique column value '+str(year)+dataset>> beam.Map(lambda x: x[0]) combine per key '+str(year)+dataset>> beam.combiners.Count.PerElement() I beam Map(print)
+
+unique eles-(unique_elem_count
+
+'filter unique values '+str(year) dataset>> beam.Filter(lambda x: x[1]--1)
+
+output unique value '+str(year) dataset>> bean. Map(lambda x: x[0])
+
+"combine unique values +str(year)+dataset>> beam.CombineGlobally(Unique())
+
+| beam Map(print)
+
+)
+
+non_unique_elem (unique_elem_count
+
+'filter non unique values'>> beam.Filter(lambda x: x[1]!=1)
+
+output non unique value'>> beam.Map(lambda x: x[0])
+
+*combine non unique values'>> beam.CombineGlobally(Unique()) beam.Map(print)
+
+)
+
+unique check-(null_check
+
+"Check unique '+str(year)+dataset>> beam. ParDo (UniqueCheck(), unique cols-beam.pvalue.AsSingleton(non_unique_elem)) beam.Map(print) )
+
+passed records (unique check
+
+'filter records with pass status '+str(year)+dataset>> beam.Filter(check_pass_status)
+
+"Formating as csv output format "+ beam Map(print) str(year)+dataset>>beam.Map(lambda x:,'.join(x[0:-3]))
+
+"writing to cauzone processed folder "+str(year)+dataset>>beam.io.WriteToText(f"gs://(bucket_name)/(base_path)
+
+(dataset)/Monthly/{year)/PROCESSED/{file_name}", file_name_suffix',num shards-1, shard_name_template")
+
+)
+
+failed_records (unique_check 'filter records with fail status '+str(year)+dataset>> beam.Filter(check fail status) )
+
+#if failed records!-None:
+
+(failed records
+
+| "Formating as CSV output format "+str(year)+dataset>>beam.Map(lambda x:','.join(x))
+
+#"Print failed records "+str(year)+dataset>>beam.Map(print) "filter records failed with length "+str(year)+dataset>> beam.Filter(lambda x: len(x)>0)
+
+"writing to cauzone error folder "+str(year)+dataset>>beam.lo.WriteToText(f"gs://(bucket name)/(base path) (dataset)/Monthly/(year)/ERROR/(file_name[0-4])_error", file_name_suffix.csv",num shards-1, shard_name template)
+
+result-p.run()
+
+result.wait_until_finish()
+
+check status = True
+
+if(check status):
+
+print("Cert Checks finished")
+
+#log_info("Data cleaning started")
+
+activate_data_cleaning(bucket_name, base path, dataset, year, file name) #log info("Data cleaning completed")
+
+print("Audit checks completed")
+
+else:
+
+print("Cert Checks failed")
+
+ne)/(base pat
+
+def start data lister():
+
+datasets-["BLACK BOOK"]
+
+for dataset in datasets:
+
+for year in range(2023, 2024):
+
+start checks (year, dataset)
+
+print("Proceeding with next year data")
+
+print(f"All year data of (dataset) finished \nProceeding with next dataset")
+
+print("All the datasets finished")
+
+14 name="main":
+
+#logging.getLogger().setLevel(level-logging.INFO)
+
+print("****..... Starting the data lister******
+
+start data lister()
+
+print("************Data lister completed..
