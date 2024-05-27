@@ -5,7 +5,7 @@ from apache_beam.io.filesystems import FileSystems
 
 class DataQualityChecks(beam.DoFn):
     """Perform data quality checks on each row of the CSV."""
-    
+
     def process(self, element):
         row, filename = element
         columns = row.split(',')
@@ -21,15 +21,16 @@ class DataQualityChecks(beam.DoFn):
             errors.append('Special character found')
 
         if errors:
+            print(f"Error in row: {row}, Errors: {errors}")
             yield beam.pvalue.TaggedOutput('error', (row, filename))
         else:
             yield (row, filename)
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     """Run the Beam pipeline to perform data quality checks."""
-    
+
     options = PipelineOptions(
-        project=project_id,  # Line 47
+        project=project_id,
         runner="DataflowRunner",
         temp_location=f'gs://{raw_zone_bucket_name}/temp',
         region='europe-west2',
@@ -45,28 +46,34 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     )
 
     with beam.Pipeline(options=options) as p:
+        print("Listing files from GCS...")
         raw_files = (
             p
-            | 'List Files' >> beam.io.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/*.csv')  # Line 68
+            | 'List Files' >> beam.io.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/*.csv')
             | 'Read Matches' >> beam.io.ReadMatches()
             | 'Extract File Path' >> beam.Map(lambda x: x.metadata.path)
         )
 
+        print("Reading files...")
         rows = (
             raw_files
             | 'Read Files' >> beam.FlatMap(read_file_lines)
         )
 
+        print("Performing data quality checks...")
         processed, errors = (
             rows
             | 'Data Quality Checks' >> beam.ParDo(DataQualityChecks()).with_outputs('error', main='main')
         )
 
-        write_results(processed, consumer_bucket_name, consumer_folder_path, 'Processed')  # Line 84
-        write_results(errors, consumer_bucket_name, consumer_folder_path, 'Error')  # Line 85
+        print("Writing processed files...")
+        write_results(processed, consumer_bucket_name, consumer_folder_path, 'Processed')
+        print("Writing error files...")
+        write_results(errors, consumer_bucket_name, consumer_folder_path, 'Error')
 
 def read_file_lines(file_path):
     """Read lines from a file in GCS."""
+    print(f"Reading file: {file_path}")
     with FileSystems.open(file_path) as f:
         for line in f:
             yield line.decode('utf-8').strip(), file_path
@@ -82,6 +89,7 @@ def write_results(results, bucket_name, folder_path, subfolder):
 
 def write_to_file(rows, output_path):
     """Write rows to a file in GCS."""
+    print(f"Writing to file: {output_path}")
     with FileSystems.create(output_path) as f:
         for row in rows:
             f.write(f"{row}\n".encode('utf-8'))
@@ -89,7 +97,7 @@ def write_to_file(rows, output_path):
 if __name__ == '__main__':
     print("Starting Data Quality Check Pipeline...")
 
-    # Replace the placeholder values with actual values
+    # Placeholder values
     project_id = 'tnt01-odycda-bld-01-1b81'  # Line 107
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"  # Line 108
     raw_zone_folder_path = "thParty/GFV/Monthly/SFGDrop"  # Line 109
