@@ -6,21 +6,8 @@ import pandas as pd
 import os
 from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
-
-MONTH_MAPPING = {
-    "01": "Jan",
-    "02": "Feb",
-    "03": "Mar",
-    "04": "Apr",
-    "05": "May",
-    "06": "Jun",
-    "07": "Jul",
-    "08": "Aug",
-    "09": "Sep",
-    "10": "Oct",
-    "11": "Nov",
-    "12": "Dec"
-}
+from apache_beam.io import fileio
+from apache_beam.io.fileio import ReadMatches
 
 def extract_date_from_filename(filename):
     """Extract date from the filename."""
@@ -99,7 +86,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
-        temp_location=f'gs://{raw_zone_bucket_name}/temp',
+        #temp_location=f'gs://{raw_zone_bucket_name}/temp',
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
@@ -140,12 +127,15 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     with beam.Pipeline(options=options) as pipeline:
         files = (
             pipeline
-            | 'List files' >> beam.io.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
+            | 'List files' >> fileio.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
+            | 'Read matches' >> ReadMatches()
             | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
+            |beam.Map(print)
             | 'Process files' >> beam.Map(process_blob)
         )
 
 if __name__ == "__main__":
+    
     project_id = 'tnt01-odycda-bld-01-1b81'
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
     consumer_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
@@ -161,9 +151,8 @@ if __name__ == "__main__":
     raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
     consumer_bucket = storage_client.bucket(consumer_bucket_name)
 
-    print("****************************** Zipping Started ******************************")
-    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
-    print("****************************** Zipping Completed ******************************")
-    print("****************************** CSV Files Loaded Successfully ******************************")
+    print("**********Files zipping started**********")
+    zip_and_transfer_csv_files(storage_client, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+    print("**********Files zipping completed**********")
 
     run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
