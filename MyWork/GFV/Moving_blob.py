@@ -58,6 +58,7 @@ if __name__ == "__main__":
 
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
+from apache_beam.io.filesystems import FileSystems
 
 class FilterAndMoveFiles(beam.DoFn):
     def __init__(self, source_bucket, destination_bucket, source_prefix, destination_prefix, prefixes):
@@ -73,7 +74,7 @@ class FilterAndMoveFiles(beam.DoFn):
 
         source_bucket = client.bucket(self.source_bucket)
         destination_bucket = client.bucket(self.destination_bucket)
-        blob = source_bucket.blob(element.path)
+        blob = source_bucket.blob(element.metadata.path)
 
         if any(blob.name.startswith(f"{self.source_prefix}/{prefix}") for prefix in self.prefixes):
             destination_blob_name = f"{self.destination_prefix}/{blob.name[len(self.source_prefix)+1:]}"
@@ -105,8 +106,8 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     with beam.Pipeline(options=options) as p:
         (
             p
-            | 'List Files' >> beam.io.gcp.gcs.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/*')
-            | 'Match Results' >> beam.io.gcp.gcs.ReadMatches()
+            | 'List Files' >> beam.Create([f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**'])
+            | 'Match Files' >> beam.FlatMap(lambda pattern: FileSystems.match([pattern])[0].metadata_list)
             | 'Move Files' >> beam.ParDo(FilterAndMoveFiles(
                 raw_zone_bucket_name, consumer_bucket_name, raw_zone_folder_path, consumer_folder_path, prefixes))
             | 'Print Results' >> beam.Map(print)
