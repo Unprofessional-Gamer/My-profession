@@ -1,6 +1,7 @@
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
 from apache_beam.io.filesystems import FileSystems
+import os
 
 class FilterAndMoveFiles(beam.DoFn):
     def __init__(self, source_bucket, destination_bucket, source_prefix, destination_prefix, prefixes):
@@ -18,9 +19,10 @@ class FilterAndMoveFiles(beam.DoFn):
         destination_bucket = client.bucket(self.destination_bucket)
         blob_name = element.path
         blob = source_bucket.blob(blob_name)
+        filename = os.path.basename(blob_name)  # Extract the filename from the path
 
-        if any(blob.name.startswith(f"{self.source_prefix}/{prefix}") for prefix in self.prefixes):
-            destination_blob_name = f"{self.destination_prefix}/{blob.name[len(self.source_prefix)+1:]}"
+        if any(filename.startswith(prefix) for prefix in self.prefixes):
+            destination_blob_name = f"{self.destination_prefix}/{filename}"
             print(f"Copying {blob.name} to {destination_blob_name}")
             source_bucket.copy_blob(blob, destination_bucket, destination_blob_name)
             print(f"Deleting {blob.name} from {self.source_bucket}")
