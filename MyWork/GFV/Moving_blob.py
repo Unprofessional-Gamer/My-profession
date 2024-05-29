@@ -1,14 +1,14 @@
 from google.cloud import storage
 
 prefixes = [
-        "LDENEW",
-        "LPRVAL",
-        "CDEVAL",
-        "CPRVAL",
-        "CDENEW",
         "CPRNEW",
-        "LPENEW",
-        "LPRVAN",
+        "CDENEW",
+        "CPRVAL",
+        "CDEVAL",
+        "LDENEW",
+        "LPRNEW",
+        "LDEVAL",
+        "LPRVAL",
         "CPRRVU",
         "CPRRVN",
         ]
@@ -123,17 +123,17 @@ if __name__ == '__main__':
     consumer_folder_path = "thparty/MFVS/GFV/Archieve"
 
     prefixes = [
-        "LDENEW",
-        "LPRVAL",
-        "CDEVAL",
-        "CPRVAL",
-        "CDENEW",
         "CPRNEW",
-        "LPENEW",
-        "LPRVAN",
+        "CDENEW",
+        "CPRVAL",
+        "CDEVAL",
+        "LDENEW",
+        "LPRNEW",
+        "LDEVAL",
+        "LPRVAL",
         "CPRRVU",
         "CPRRVN",
-    ]
+        ]
 
     print("***************************************** Starting the pipeline ******************************************")
     run_pipeline(project_id, raw_zone_bucket, raw_zone_folder_path, DP_consumer_bucket, consumer_folder_path)
