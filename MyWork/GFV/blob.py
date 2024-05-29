@@ -44,8 +44,8 @@ def move_files_with_prefixes(source_bucket_name, source_folder_path, destination
     # Get the month name from the mapping
     month_name = MONTH_MAPPING[current_month]
 
-    # Construct the full destination path
-    full_destination_folder_path = f"{destination_folder_path}/{current_year}/{month_name}/Archive"
+    # Construct the full destination path in YYYY-MM format
+    full_destination_folder_path = f"{destination_folder_path}/{current_year}-{month_name}"
 
     # List blobs in the source bucket with the specified folder path
     blobs = client.list_blobs(source_bucket, prefix=source_folder_path)
