@@ -14,6 +14,21 @@ prefixes = [
     "CPRRVN",
 ]
 
+MONTH_MAPPING = {
+    "01": "Jan",
+    "02": "Feb",
+    "03": "Mar",
+    "04": "Apr",
+    "05": "May",
+    "06": "Jun",
+    "07": "Jul",
+    "08": "Aug",
+    "09": "Sep",
+    "10": "Oct",
+    "11": "Nov",
+    "12": "Dec"
+}
+
 def move_files_with_prefixes(source_bucket_name, source_folder_path, destination_bucket_name, destination_folder_path, prefixes):
     # Initialize the GCS client
     client = storage.Client(project=project_id)
@@ -24,10 +39,13 @@ def move_files_with_prefixes(source_bucket_name, source_folder_path, destination
 
     # Get the current year and month
     current_year = datetime.now().year
-    current_month = datetime.now().month
+    current_month = datetime.now().strftime("%m")
+
+    # Get the month name from the mapping
+    month_name = MONTH_MAPPING[current_month]
 
     # Construct the full destination path
-    full_destination_folder_path = f"{destination_folder_path}/{current_year}/{current_month}/Archive"
+    full_destination_folder_path = f"{destination_folder_path}/{current_year}/{month_name}/Archive"
 
     # List blobs in the source bucket with the specified folder path
     blobs = client.list_blobs(source_bucket, prefix=source_folder_path)
