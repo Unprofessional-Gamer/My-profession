@@ -10,6 +10,7 @@ from apache_beam.io import fileio
 from apache_beam.io.fileio import ReadMatches
 
 def extract_date_from_filename(filename):
+    """Extract date from the filename."""
     date_str = filename.split('-')[-1].split('.')[0]
     date_str = date_str[:8]
     if len(date_str) == 8 and date_str.isdigit():
@@ -17,47 +18,46 @@ def extract_date_from_filename(filename):
     else:
         return datetime.now().strftime('%Y-%m-%d')
 
-def move_files(raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
-    storage_client = storage.Client()
-    raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_folder_path))
+def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
+    """Zip specified files into a ZIP folder."""
     
+    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_folder_path))
+
     if not blob_list:
         print(f"No files found in {raw_zone_folder_path}.")
         return
     
     try:
+        # create memory zip
+        zip_buffer = {}
         for blob in blob_list:
-            file_name = blob.name.split('/')[-1]
-            if file_name.startswith(('CPRRVU', 'CPRRVN')):
-                consumer_bucket = storage_client.bucket(consumer_bucket_name)
-                consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(blob.download_as_bytes())
-                print(f"Moved {file_name} as is to {consumer_folder_path}/{file_name}")
-            else:
-                handle_zip_and_transfer(blob, consumer_bucket_name, consumer_folder_path)
+            if blob.name.endswith('.csv'):
+                date = extract_date_from_filename(blob.name)
+                naming_convention = check_naming_convention(blob.name, date)
+                file_name = blob.name.split('/')[-1]
+                if naming_convention is not None:
+                    zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
+                    if zip_name not in zip_buffer:
+                        zip_buffer[zip_name] = io.BytesIO()
+                    csv_data = blob.download_as_bytes()
+                    with zipfile.ZipFile(zip_buffer[zip_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
+                        zipf.writestr(os.path.basename(blob.name), csv_data)
+                else:
+                    df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_folder_path}/{file_name}", skiprows=1)
+                    consumer_bucket = storage_client.bucket(consumer_bucket_name)
+                    consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
+                    print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
+
+        for zip_name, zip_buffer in zip_buffer.items():
+            zip_buffer.seek(0)
+            consumer_bucket = storage_client.bucket(consumer_bucket_name)
+            zip_blob = consumer_bucket.blob(zip_name + ".zip")
+            print(f"Zipped blob is: {zip_blob}")
+            zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
         print(f"Uploaded files to {consumer_bucket_name} successfully.")
+
     except Exception as e:
         print(f"Error: {e}")
-
-def handle_zip_and_transfer(blob, consumer_bucket_name, consumer_folder_path):
-    storage_client = storage.Client()
-    date = extract_date_from_filename(blob.name)
-    naming_convention = check_naming_convention(blob.name, date)
-    if naming_convention is not None:
-        zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
-        zip_buffer = io.BytesIO()
-        csv_data = blob.download_as_bytes()
-        with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.writestr(os.path.basename(blob.name), csv_data)
-        zip_buffer.seek(0)
-        consumer_bucket = storage_client.bucket(consumer_bucket_name)
-        zip_blob = consumer_bucket.blob(zip_name + ".zip")
-        zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-    else:
-        df = pd.read_csv(f"gs://{blob.bucket.name}/{blob.name}", skiprows=1)
-        consumer_bucket = storage_client.bucket(consumer_bucket_name)
-        consumer_bucket.blob(f"{consumer_folder_path}/{blob.name.split('/')[-1]}").upload_from_string(df.to_csv(index=False), 'text/csv')
-        print(f"Moved {blob.name} as a CSV file to {consumer_folder_path}/{blob.name.split('/')[-1]}")
 
 def check_naming_convention(filename, date):
     date_format = date.replace('-', '')
@@ -72,11 +72,22 @@ def check_naming_convention(filename, date):
     else:
         return None
 
+def move_special_files(storage_client, raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
+    """Move files starting with 'CPRRVU' or 'CPRRVN' to the consumer folder path."""
+    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
+    for blob in blob_list:
+        file_name = blob.name.split("/")[-1]
+        if file_name.startswith("CPRRVU") or file_name.startswith("CPRRVN"):
+            date = extract_date_from_filename(file_name)
+            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_csv_path}/{file_name}", skiprows=1)
+            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
+            print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
+        #temp_location=f'gs://{raw_zone_bucket_name}/temp',
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
@@ -95,27 +106,24 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
         consumer_bucket = storage_client.bucket(consumer_bucket_name)
         
         blob = raw_zone_bucket.blob(blob_name)
+        date = extract_date_from_filename(blob_name)
+        naming_convention = check_naming_convention(blob_name, date)
         file_name = blob_name.split('/')[-1]
         
-        if file_name.startswith(('CPRRVU', 'CPRRVN')):
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(blob.download_as_bytes())
-            return f"Moved {blob_name} as is"
+        if naming_convention is not None:
+            zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
+            zip_buffer = io.BytesIO()
+            csv_data = blob.download_as_bytes()
+            with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
+                zipf.writestr(file_name, csv_data)
+            zip_buffer.seek(0)
+            zip_blob = consumer_bucket.blob(zip_name + ".zip")
+            zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
         else:
-            date = extract_date_from_filename(blob_name)
-            naming_convention = check_naming_convention(blob_name, date)
-            if naming_convention is not None:
-                zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
-                zip_buffer = io.BytesIO()
-                csv_data = blob.download_as_bytes()
-                with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.writestr(file_name, csv_data)
-                zip_buffer.seek(0)
-                zip_blob = consumer_bucket.blob(zip_name + ".zip")
-                zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-            else:
-                df = pd.read_csv(f"gs://{raw_zone_bucket_name}/{blob_name}", skiprows=1)
-                consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-            return f"Processed {blob_name}"
+            df = pd.read_csv(f"gs://{raw_zone_bucket_name}/{blob_name}", skiprows=1)
+            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.tocsv(index=False), 'text/csv')
+        
+        return f"Processed {blob_name}"
 
     with beam.Pipeline(options=options) as pipeline:
         files = (
@@ -123,6 +131,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
             | 'List files' >> fileio.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
             | 'Read matches' >> ReadMatches()
             | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
+            | beam.Map(print)
             | 'Process files' >> beam.Map(process_blob)
         )
 
@@ -139,8 +148,13 @@ if __name__ == "__main__":
     raw_zone_zip_path = f"{sfg_base_path}" 
     raw_zone_csv_path = f"{staging_folder_path}/GFV_files"
 
-    print("**********Files moving started**********")
-    move_files(raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
-    print("**********Files moving completed**********")
+    storage_client = storage.Client(project=project_id)
+    raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
+    consumer_bucket = storage_client.bucket(consumer_bucket_name)
 
+    print("**********Files zipping started**********")
+    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+    print("**********Files zipping completed**********")
+    move_special_files(storage_client, raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path)
     run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+
