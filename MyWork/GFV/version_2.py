@@ -72,14 +72,14 @@ def check_naming_convention(filename, date):
     else:
         return None
 
-def move_special_files(storage_client, raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
+def move_special_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket, consumer_folder_path):
     """Move files starting with 'CPRRVU' or 'CPRRVN' to the consumer folder path."""
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
+    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_zip_path))
     for blob in blob_list:
         file_name = blob.name.split("/")[-1]
         if file_name.startswith("CPRRVU") or file_name.startswith("CPRRVN"):
             date = extract_date_from_filename(file_name)
-            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_csv_path}/{file_name}", skiprows=1)
+            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_zip_path}/{file_name}", skiprows=1)
             consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
             print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
@@ -121,7 +121,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
             zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
         else:
             df = pd.read_csv(f"gs://{raw_zone_bucket_name}/{blob_name}", skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.tocsv(index=False), 'text/csv')
+            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
         
         return f"Processed {blob_name}"
 
@@ -131,7 +131,6 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
             | 'List files' >> fileio.MatchFiles(f'gs://{raw_zone_bucket_name}/{raw_zone_folder_path}/**/*.csv')
             | 'Read matches' >> ReadMatches()
             | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
-            | beam.Map(print)
             | 'Process files' >> beam.Map(process_blob)
         )
 
@@ -141,12 +140,9 @@ if __name__ == "__main__":
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
     consumer_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
 
-    sfg_base_path = "thParty/GFV/Monthly/SFGDrop" 
-    staging_folder_path = "thparty/thParty/GFV/Monthly/Dummy_data" 
+    raw_zone_zip_path = "thParty/GFV/Monthly/SFGDrop" 
 
     consumer_folder_path = 'thParty/GFV/Monthly'
-    raw_zone_zip_path = f"{sfg_base_path}" 
-    raw_zone_csv_path = f"{staging_folder_path}/GFV_files"
 
     storage_client = storage.Client(project=project_id)
     raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
@@ -155,6 +151,6 @@ if __name__ == "__main__":
     print("**********Files zipping started**********")
     zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
     print("**********Files zipping completed**********")
-    move_special_files(storage_client, raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path)
+    move_special_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket, consumer_folder_path)
     run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
 
