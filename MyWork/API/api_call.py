@@ -43,7 +43,7 @@ def download_and_upload_to_gcs():
 if __name__ == "__main__":
     
 
-    project_id = "tnt-01-bld"`
+    project_id = "tnt-01-bld"
     folder_path = 'thParty/MFVS/GFV/'
 
     # Configure logging
