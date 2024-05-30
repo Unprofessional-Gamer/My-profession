@@ -72,15 +72,6 @@ def check_naming_convention(filename, date):
     else:
         return None
 
-def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
-    for blob in blob_list:
-        file_name = blob.name.split("/")[-1]
-        if "GFV" in file_name:
-            date = extract_date_from_filename(file_name)
-            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_csv_path}/{file_name}", skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-            print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     options = PipelineOptions(
