@@ -42,17 +42,11 @@ def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_
                     csv_data = blob.download_as_bytes()
                     with zipfile.ZipFile(zip_buffer[zip_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
                         zipf.writestr(os.path.basename(blob.name), csv_data)
-                else:
-                    df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_folder_path}/{file_name}", skiprows=1)
-                    consumer_bucket = storage_client.bucket(consumer_bucket_name)
-                    consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-                    print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
         for zip_name, zip_buffer in zip_buffer.items():
             zip_buffer.seek(0)
             consumer_bucket = storage_client.bucket(consumer_bucket_name)
             zip_blob = consumer_bucket.blob(zip_name + ".zip")
-            print(f"Zipped blob is: {zip_blob}")
             zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
         print(f"Uploaded files to {consumer_bucket_name} successfully.")
 
@@ -87,7 +81,6 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
-        #temp_location=f'gs://{raw_zone_bucket_name}/temp',
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
@@ -153,4 +146,3 @@ if __name__ == "__main__":
     print("**********Files zipping completed**********")
     move_special_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket, consumer_folder_path)
     run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
-
