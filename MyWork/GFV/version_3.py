@@ -2,6 +2,7 @@ from google.cloud import storage
 import zipfile
 import io
 from datetime import datetime
+import pandas as pd
 import os
 from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
@@ -20,6 +21,13 @@ def move_files(raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name,
         print(f"No files found in {raw_zone_folder_path}.")
         return
     
+    zip_groups = {
+        "CarsNvpo": [],
+        "BlackBookCodesAndDescriptions": [],
+        "LightsNvpo": [],
+        "RedLCVBookCodesAndDescriptions": []
+    }
+
     try:
         for blob in blob_list:
             file_name = blob.name.split('/')[-1]
@@ -28,42 +36,48 @@ def move_files(raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name,
                 consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(blob.download_as_bytes())
                 print(f"Moved {file_name} as is to {consumer_folder_path}/{file_name}")
             else:
-                handle_zip_and_transfer(blob, consumer_bucket_name, consumer_folder_path)
+                date = extract_date()
+                naming_convention = check_naming_convention(blob.name)
+                if naming_convention:
+                    zip_groups[naming_convention].append(blob)
+                else:
+                    handle_csv_transfer(blob, consumer_bucket_name, consumer_folder_path)
+        
+        # Zip the groups
+        for group, blobs in zip_groups.items():
+            if blobs:
+                zip_name = os.path.join(consumer_folder_path, f"{extract_date().replace('-', '')}-{group}-csv.zip").replace("\\", "/")
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
+                    for blob in blobs:
+                        csv_data = blob.download_as_bytes()
+                        zipf.writestr(os.path.basename(blob.name), csv_data)
+                zip_buffer.seek(0)
+                consumer_bucket = storage_client.bucket(consumer_bucket_name)
+                zip_blob = consumer_bucket.blob(zip_name)
+                zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
+                print(f"Zipped and moved {len(blobs)} files to {zip_name}")
+
         print(f"Uploaded files to {consumer_bucket_name} successfully.")
     except Exception as e:
         print(f"Error: {e}")
 
-def handle_zip_and_transfer(blob, consumer_bucket_name, consumer_folder_path):
+def handle_csv_transfer(blob, consumer_bucket_name, consumer_folder_path):
     storage_client = storage.Client()
-    date = extract_date()
-    naming_convention = check_naming_convention(blob.name, date)
-    if naming_convention is not None:
-        zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
-        zip_buffer = io.BytesIO()
-        csv_data = blob.download_as_bytes()
-        with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.writestr(os.path.basename(blob.name), csv_data)
-        zip_buffer.seek(0)
-        consumer_bucket = storage_client.bucket(consumer_bucket_name)
-        zip_blob = consumer_bucket.blob(zip_name + ".zip")
-        zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-        print(f"Zipped and moved {blob.name} to {zip_name}.zip")
-    else:
-        df = pd.read_csv(f"gs://{blob.bucket.name}/{blob.name}", skiprows=1)
-        consumer_bucket = storage_client.bucket(consumer_bucket_name)
-        consumer_bucket.blob(f"{consumer_folder_path}/{blob.name.split('/')[-1]}").upload_from_string(df.to_csv(index=False), 'text/csv')
-        print(f"Moved {blob.name} as a CSV file to {consumer_folder_path}/{blob.name.split('/')[-1]}")
+    df = pd.read_csv(f"gs://{blob.bucket.name}/{blob.name}", skiprows=1)
+    consumer_bucket = storage_client.bucket(consumer_bucket_name)
+    consumer_bucket.blob(f"{consumer_folder_path}/{blob.name.split('/')[-1]}").upload_from_string(df.to_csv(index=False), 'text/csv')
+    print(f"Moved {blob.name} as a CSV file to {consumer_folder_path}/{blob.name.split('/')[-1]}")
 
-def check_naming_convention(filename, date):
-    date_format = date.replace('-', '')
+def check_naming_convention(filename):
     if 'CPRNEW' in filename or 'CDENEW' in filename:
-        return f"{date_format}-CarsNvpo-csv"
+        return "CarsNvpo"
     elif 'CPRVAL' in filename or 'CDEVAL' in filename:
-        return f"{date_format}-BlackBookCodesAndDescriptions-csv"
+        return "BlackBookCodesAndDescriptions"
     elif 'LDENEW' in filename or 'LPRNEW' in filename:
-        return f"{date_format}-LightsNvpo-csv"
+        return "LightsNvpo"
     elif 'LDEVAL' in filename or 'LPRVAL' in filename:
-        return f"{date_format}-RedLCVBookCodesAndDescriptions-csv"
+        return "RedLCVBookCodesAndDescriptions"
     else:
         return None
 
@@ -96,15 +110,15 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
             return f"Moved {blob_name} as is"
         else:
             date = extract_date()
-            naming_convention = check_naming_convention(blob_name, date)
-            if naming_convention is not None:
-                zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
+            naming_convention = check_naming_convention(blob_name)
+            if naming_convention:
+                zip_name = os.path.join(consumer_folder_path, f"{date.replace('-', '')}-{naming_convention}-csv.zip").replace("\\", "/")
                 zip_buffer = io.BytesIO()
                 csv_data = blob.download_as_bytes()
                 with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
                     zipf.writestr(file_name, csv_data)
                 zip_buffer.seek(0)
-                zip_blob = consumer_bucket.blob(zip_name + ".zip")
+                zip_blob = consumer_bucket.blob(zip_name)
                 zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
                 return f"Zipped and moved {blob_name} to {zip_name}.zip"
             else:
