@@ -2,20 +2,14 @@ from google.cloud import storage
 import zipfile
 import io
 from datetime import datetime
-import pandas as pd
 import os
 from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
 from apache_beam.io import fileio
 from apache_beam.io.fileio import ReadMatches
 
-def extract_date_from_filename(filename):
-    date_str = filename.split('-')[-1].split('.')[0]
-    date_str = date_str[:8]
-    if len(date_str) == 8 and date_str.isdigit():
-        return datetime.strptime(date_str, '%Y%m%d').strftime('%Y-%m-%d')
-    else:
-        return datetime.now().strftime('%Y-%m-%d')
+def extract_date():
+    return datetime.now().strftime('%Y-%m-%d')
 
 def move_files(raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     storage_client = storage.Client()
@@ -41,7 +35,7 @@ def move_files(raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name,
 
 def handle_zip_and_transfer(blob, consumer_bucket_name, consumer_folder_path):
     storage_client = storage.Client()
-    date = extract_date_from_filename(blob.name)
+    date = extract_date()
     naming_convention = check_naming_convention(blob.name, date)
     if naming_convention is not None:
         zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
@@ -53,6 +47,7 @@ def handle_zip_and_transfer(blob, consumer_bucket_name, consumer_folder_path):
         consumer_bucket = storage_client.bucket(consumer_bucket_name)
         zip_blob = consumer_bucket.blob(zip_name + ".zip")
         zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
+        print(f"Zipped and moved {blob.name} to {zip_name}.zip")
     else:
         df = pd.read_csv(f"gs://{blob.bucket.name}/{blob.name}", skiprows=1)
         consumer_bucket = storage_client.bucket(consumer_bucket_name)
@@ -71,16 +66,6 @@ def check_naming_convention(filename, date):
         return f"{date_format}-RedLCVBookCodesAndDescriptions-csv"
     else:
         return None
-
-def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
-    for blob in blob_list:
-        file_name = blob.name.split("/")[-1]
-        if "GFV" in file_name:
-            date = extract_date_from_filename(file_name)
-            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_csv_path}/{file_name}", skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-            print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     options = PipelineOptions(
@@ -110,7 +95,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
             consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(blob.download_as_bytes())
             return f"Moved {blob_name} as is"
         else:
-            date = extract_date_from_filename(blob_name)
+            date = extract_date()
             naming_convention = check_naming_convention(blob_name, date)
             if naming_convention is not None:
                 zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
@@ -121,10 +106,11 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
                 zip_buffer.seek(0)
                 zip_blob = consumer_bucket.blob(zip_name + ".zip")
                 zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
+                return f"Zipped and moved {blob_name} to {zip_name}.zip"
             else:
                 df = pd.read_csv(f"gs://{raw_zone_bucket_name}/{blob_name}", skiprows=1)
                 consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-            return f"Processed {blob_name}"
+                return f"Moved {blob_name} as a CSV file"
 
     with beam.Pipeline(options=options) as pipeline:
         files = (
@@ -139,17 +125,12 @@ if __name__ == "__main__":
     
     project_id = 'tnt01-odycda-bld-01-1b81'
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
+    raw_zone_path = "thParty/GFV/Monthly/SFGDrop" 
     consumer_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
-
-    sfg_base_path = "thParty/GFV/Monthly/SFGDrop" 
-    staging_folder_path = "thparty/thParty/GFV/Monthly/Dummy_data" 
-
     consumer_folder_path = 'thParty/GFV/Monthly'
-    raw_zone_zip_path = f"{sfg_base_path}" 
-    raw_zone_csv_path = f"{staging_folder_path}/GFV_files"
 
     print("**********Files moving started**********")
-    move_files(raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+    move_files(raw_zone_bucket_name, raw_zone_path, consumer_bucket_name, consumer_folder_path)
     print("**********Files moving completed**********")
 
-    run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+    run_pipeline(project_id, raw_zone_bucket_name, raw_zone_path, consumer_bucket_name, consumer_folder_path)
