@@ -1,11 +1,13 @@
+# /path/to/combined_script.py
+
 from google.cloud import storage
 import zipfile
 import io
 from datetime import datetime
 import pandas as pd
 import os
-from apache_beam.options.pipeline_options import PipelineOptions
 import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io import fileio
 from apache_beam.io.fileio import ReadMatches
 
@@ -18,6 +20,20 @@ def extract_date_from_filename(filename):
     else:
         return datetime.now().strftime('%Y-%m-%d')
 
+def check_naming_convention(filename, date):
+    """Check the naming convention for specific patterns."""
+    date_format = date.replace('-', '')
+    if filename.startswith('CPRNEW') or filename.startswith('CDENEW'):
+        return f"{date_format}-CarsNvpo-csv"
+    elif filename.startswith('CPRVAL') or filename.startswith('CDEVAL'):
+        return f"{date_format}-BlackBookCodesAndDescriptions-csv"
+    elif filename.startswith('LDENEW') or filename.startswith('LPRNEW'):
+        return f"{date_format}-LightsNvpo-csv"
+    elif filename.startswith('LDEVAL') or filename.startswith('LPRVAL'):
+        return f"{date_format}-RedLCVBookCodesAndDescriptions-csv"
+    else:
+        return None
+
 def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     """Zip specified files into a ZIP folder."""
     
@@ -28,9 +44,7 @@ def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_
         return
     
     try:
-        # create memory zip
         zip_buffer = {}
-        archive_folder = os.path.join(consumer_folder_path, 'Archive folder')
         for blob in blob_list:
             if blob.name.endswith('.csv'):
                 date = extract_date_from_filename(blob.name)
@@ -43,55 +57,46 @@ def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_
                     csv_data = blob.download_as_bytes()
                     with zipfile.ZipFile(zip_buffer[zip_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
                         zipf.writestr(os.path.basename(blob.name), csv_data)
-                    # Move file to Archive folder
-                    archive_blob_name = os.path.join(archive_folder, file_name)
-                    blob.copy(archive_blob_name)
-                    print(f"Moved {file_name} to {archive_folder}/{file_name}")
-                else:
-                    df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_folder_path}/{file_name}", skiprows=1)
-                    consumer_bucket = storage_client.bucket(consumer_bucket_name)
-                    consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-                    print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
         for zip_name, zip_buffer in zip_buffer.items():
             zip_buffer.seek(0)
             consumer_bucket = storage_client.bucket(consumer_bucket_name)
             zip_blob = consumer_bucket.blob(zip_name + ".zip")
-            print(f"Zipped blob is: {zip_blob}")
             zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
         print(f"Uploaded files to {consumer_bucket_name} successfully.")
 
     except Exception as e:
         print(f"Error: {e}")
 
-def check_naming_convention(filename, date):
-    date_format = date.replace('-', '')
-    if 'CPRNEW' in filename or 'CDENEW' in filename:
-        return f"{date_format}-CarsNvpo-csv"
-    elif 'CPRVAL' in filename or 'CDEVAL' in filename:
-        return f"{date_format}-BlackBookCodesAndDescriptions-csv"
-    elif 'LDENEW' in filename or 'LPRNEW' in filename:
-        return f"{date_format}-LightsNvpo-csv"
-    elif 'LDEVAL' in filename or 'LPRVAL' in filename:
-        return f"{date_format}-RedLCVBookCodesAndDescriptions-csv"
-    else:
-        return None
-
-def copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path):
-    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_csv_path))
+def move_special_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket, consumer_folder_path):
+    """Move files starting with 'CPRRVU' or 'CPRRVN' to the consumer folder path."""
+    blob_list = list(raw_zone_bucket.list_blobs(prefix=raw_zone_zip_path))
     for blob in blob_list:
         file_name = blob.name.split("/")[-1]
-        if "GFV" in file_name:
+        if file_name.startswith("CPRRVU") or file_name.startswith("CPRRVN"):
             date = extract_date_from_filename(file_name)
-            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_csv_path}/{file_name}", skiprows=1)
+            df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_zip_path}/{file_name}", skiprows=1)
             consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
             print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
+
+def move_files_with_prefixes(source_bucket_name, source_folder_path, destination_bucket_name, destination_folder_path, prefixes):
+    """Move files with specified prefixes."""
+    client = storage.Client(project=project_id)
+    source_bucket = client.bucket(source_bucket_name)
+    destination_bucket = client.bucket(destination_bucket_name)
+    blobs = client.list_blobs(source_bucket, prefix=source_folder_path)
+
+    for blob in blobs:
+        if any(blob.name.startswith(f"{source_folder_path}/{prefix}") for prefix in prefixes):
+            destination_blob_name = f"{destination_folder_path}/{blob.name[len(source_folder_path)+1:]}"
+            source_bucket.copy_blob(blob, destination_bucket, destination_blob_name)
+            blob.delete()
+            print(f"Moved: {blob.name} to {destination_blob_name}")
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path):
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
-        #temp_location=f'gs://{raw_zone_bucket_name}/temp',
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
@@ -129,7 +134,6 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
         
         return f"Processed {blob_name}"
 
-   
     with beam.Pipeline(options=options) as pipeline:
         files = (
             pipeline
@@ -140,30 +144,28 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consume
         )
 
 if __name__ == "__main__":
-    
     project_id = 'tnt01-odycda-bld-01-1b81'
     raw_zone_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
     consumer_bucket_name = "tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a"
-
-    sfg_base_path = "thParty/GFV/Monthly/SFGDrop" 
-    staging_folder_path = "thparty/thParty/GFV/Monthly/Dummy_data" 
-
+    raw_zone_folder_path = "thParty/GFV/Monthly/SFGDrop"
     consumer_folder_path = 'thParty/GFV/Monthly'
-    raw_zone_zip_path = f"{sfg_base_path}" 
-    raw_zone_csv_path = f"{staging_folder_path}/GFV_files"
+    prefixes = ["CPRNEW", "CDENEW", "CPRVAL", "CDEVAL", "LDENEW", "LPRNEW", "LDEVAL", "LPRVAL", "CPRRVU", "CPRRVN"]
 
     storage_client = storage.Client(project=project_id)
     raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
     consumer_bucket = storage_client.bucket(consumer_bucket_name)
 
     print("**********Files zipping started**********")
-    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
+    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path)
     print("**********Files zipping completed**********")
+    
+    move_special_files(storage_client, raw_zone_bucket, raw_zone_folder_path, consumer_bucket, consumer_folder_path)
+    
+    run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, consumer_bucket_name, consumer_folder_path)
 
-    print("**********Copying and transferring CSV files**********")
-    copy_and_transfer_csv(raw_zone_bucket, raw_zone_csv_path, consumer_bucket, consumer_folder_path)
-    print("**********CSV files copying and transferring completed**********")
+    raw_zone_folder_path_for_move = "thparty/MFVS/GFV/SFGDrop"
+    consumer_folder_path_for_move = "thparty/MFVS/GFV/Archive"
 
-    print("**********Running pipeline**********")
-    run_pipeline(project_id, raw_zone_bucket_name, raw_zone_zip_path, consumer_bucket_name, consumer_folder_path)
-    print("**********Pipeline completed**********")
+    print("**************** Files Moving Started  *****************")
+    move_files_with_prefixes(raw_zone_bucket_name, raw_zone_folder_path_for_move, consumer_bucket_name, consumer_folder_path_for_move, prefixes)
+    print("**************** Files Moving Completed *****************")

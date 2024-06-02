@@ -14,6 +14,9 @@ def download_and_extract_zip_from_gcs():
         # Define GCS bucket and path of the ZIP file
         bucket_name = "your-bucket-name"
         zip_file_path = "thp_arty/MFVS/20240501-BlackBookPlatinumPlus-CSV.zip"  # Specify the path to your ZIP file
+        filename = zip_file_path[:-9]
+        print(filename)
+        
         
         # Get the ZIP file from GCS
         bucket = client.bucket(bucket_name)
