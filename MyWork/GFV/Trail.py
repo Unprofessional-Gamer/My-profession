@@ -42,11 +42,6 @@ def zip_and_transfer_csv_files(storage_client, raw_zone_bucket, raw_zone_folder_
                     csv_data = blob.download_as_bytes()
                     with zipfile.ZipFile(zip_buffer[zip_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
                         zipf.writestr(os.path.basename(blob.name), csv_data)
-                else:
-                    df = pd.read_csv(f"gs://{raw_zone_bucket.name}/{raw_zone_folder_path}/{file_name}", skiprows=1)
-                    consumer_bucket = storage_client.bucket(consumer_bucket_name)
-                    consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
-                    print(f"Moved {file_name} as a CSV file to {consumer_folder_path}/{file_name}")
 
         for zip_name, zip_buffer in zip_buffer.items():
             zip_buffer.seek(0)
@@ -118,9 +113,6 @@ def run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_bucke
             zip_buffer.seek(0)
             zip_blob = consumer_bucket.blob(zip_name + ".zip")
             zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-        else:
-            df = pd.read_csv(f"gs://{raw_zone_bucket_name}/{blob_name}", skiprows=1)
-            consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(df.to_csv(index=False), 'text/csv')
         
         return f"Processed {blob_name}"
 
@@ -147,12 +139,12 @@ if __name__ == "__main__":
     raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
     consumer_bucket = storage_client.bucket(consumer_bucket_name)
 
-    print("**********Files zipping started**********")
-    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, sfg_base_path, consumer_bucket_name, consumer_folder_path)
-    print("**********Files zipping completed**********")
-
     print("**********CSV file copying started**********")
     copy_and_transfer_csv(raw_zone_bucket, sfg_base_path, consumer_bucket, consumer_folder_path)
     print("**********CSV file copying completed**********")
+
+    print("**********Files zipping started**********")
+    zip_and_transfer_csv_files(storage_client, raw_zone_bucket, sfg_base_path, consumer_bucket_name, consumer_folder_path)
+    print("**********Files zipping completed**********")
 
     run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_bucket_name, consumer_folder_path)
