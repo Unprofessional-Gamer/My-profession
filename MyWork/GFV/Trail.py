@@ -9,6 +9,8 @@ import apache_beam as beam
 from apache_beam.io import fileio
 from apache_beam.io.fileio import ReadMatches
 
+gfv_files = {"CPRRVU", "CPRRVN", "LPRRVN", "LPRRVU"}
+
 def extract_date_from_filename(filename):
     """Extract date from the filename."""
     date_str = filename.split('-')[-1].split('.')[0]
@@ -67,18 +69,18 @@ def check_naming_convention(filename, date):
     else:
         return None
 
-def copy_and_transfer_csv(raw_zone_bucket, sfg_base_path, consumer_bucket, consumer_folder_path):
+def copy_and_transfer_csv(raw_zone_bucket, sfg_base_path, consumer_bucket, consumer_folder_path, gfv_files):
     blob_list = list(raw_zone_bucket.list_blobs(prefix=sfg_base_path))
     for blob in blob_list:
         file_name = blob.name.split("/")[-1]
-        if file_name.startswith("CPRRVU") or file_name.startswith("CPRRVN"):
+        if any(file_name.startswith(prefix) for prefix in gfv_files):
             print(f"Processing file: {file_name}")
             consumer_bucket.blob(f"{consumer_folder_path}/{file_name}").upload_from_string(blob.download_as_bytes(), 'text/csv')
             print(f"Moved {file_name} to {consumer_folder_path}/{file_name}")
         else:
             print(f"Ignored file: {file_name}")
 
-def run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_bucket_name, consumer_folder_path):
+def run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name):
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
@@ -140,11 +142,11 @@ if __name__ == "__main__":
     consumer_bucket = storage_client.bucket(consumer_bucket_name)
 
     print("**********CSV file copying started**********")
-    copy_and_transfer_csv(raw_zone_bucket, sfg_base_path, consumer_bucket, consumer_folder_path)
+    copy_and_transfer_csv(raw_zone_bucket, sfg_base_path, consumer_bucket, consumer_folder_path, gfv_files)
     print("**********CSV file copying completed**********")
 
     print("**********Files zipping started**********")
     zip_and_transfer_csv_files(storage_client, raw_zone_bucket, sfg_base_path, consumer_bucket_name, consumer_folder_path)
     print("**********Files zipping completed**********")
 
-    run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_bucket_name, consumer_folder_path)
+    run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name)
