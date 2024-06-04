@@ -14,7 +14,7 @@ class FilterNull(beam.DoFn):
 
 class RemoveUnwantedChars(beam.DoFn):
     def process(self, element):
-        custom = [ele.translate(str.maketrans(",#$%^!&-", "         ")) for ele in element]
+        custom = [ele.translate(str.maketrans("','", "   ")) for ele in element]
         return [custom]
 
 def get_content_type(file_name):
@@ -48,16 +48,16 @@ def activate_data_cleaning(bucket_name, base_path, file_name):
                                | f"Making the data into standard iterable units {file_name}" >> beam.ParDo(RemoveDoubleQuotes())
                                | f"Removing the null values in file data {file_name}"  >> beam.ParDo(FilterNull())
                                | f"Removing the Unwanted characters in file data {file_name}" >> beam.ParDo(RemoveUnwantedChars())
-                               | f"Formatting as CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x))
+                               | f"Formatting into CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x))
                                )
 
         content_type = get_content_type(file_name)
         if content_type == "text/csv":
             (processed_file_read
-             | "Writing to certified zone received folder" >> beam.io.WriteToText(f"gs://tnt01-odycda-bld-01-stb-eu-certzone-386745f0/{base_path}/RECEIVED/{file_name}",
+             | "Writing to certified zone received folder" >> beam.io.WriteToText(f"gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/{base_path}/RECEIVED/{file_name}",
                                                                                   file_name_suffix=".csv",
                                                                                   num_shards=1,
-                                                                                  shard_name_template="-")
+                                                                                  shard_name_template="")
              )
 
 class NullCheck(beam.DoFn):
@@ -108,7 +108,7 @@ def start_checks():
         base_path = 'thParty/MFVS/GFV/update'
         folder_path = f'{base_path}/Monthly/RECEIVED/'
         client = storage.Client("tnt01-odycda-bld-01-1681")
-        blob_list = client.list_blobs(bucket_name, prefix=folder_path)
+        blob_list = client.list_blobs(bucket_name, prefix=base_path)
 
         for blob in blob_list:
             if blob.name.endswith('.csv'):
@@ -142,7 +142,7 @@ def start_checks():
 
                 failed_records = (null_check
                                   | f"Filter records with fail status {file_name}" >> beam.Filter(check_fail_status)
-                                  | f"Formatting as CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x))
+                                  | f"Formatting to get CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x))
                                   | f"Writing to cauzone error folder {file_name}" >> beam.io.WriteToText(f"gs://{bucket_name}/{base_path}/Monthly/ERROR/{file_name[:4]}_error.csv",
                                                                                                           file_name_suffix='.csv',
                                                                                                           num_shards=1,
@@ -166,6 +166,7 @@ def start_data_lister():
     print("All files in the base path processed")
 
 if __name__ == "__main__":
-    print("**..... Starting the data lister ")
+
+    print("**************************Starting the Data quality checks****************************")
     start_data_lister()
-    print("**** Data lister completed.. ************")
+    print("**************************Finished the Data quality checks****************************")
