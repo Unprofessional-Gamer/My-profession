@@ -1,15 +1,20 @@
 from io import StringIO
 from google.cloud import storage
 import pandas as pd
+import os
 
 # Set up GCS client
 def list_files_in_folder(bucket_name, folder_path):
+    print(f"Listing all files in folder: {folder_path}")
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     blobs = bucket.list_blobs(prefix=folder_path)
-    return [blob.name for blob in blobs if blob.name.endswith('.csv')]
+    files = [blob.name for blob in blobs if blob.name.endswith('.csv')]
+    print(f"Found {len(files)} CSV files.")
+    return files
 
 def read_csv_file_from_gcs(bucket_name, file_path):
+    print(f"Reading file from GCS: {file_path}")
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(file_path)
@@ -17,6 +22,7 @@ def read_csv_file_from_gcs(bucket_name, file_path):
     return pd.read_csv(StringIO(content))
 
 def consolidate_error_files(bucket_name, error_folder_path, raw_zone_folder_path, output_file_name):
+    print("Starting the error consolidation process...")
     files = list_files_in_folder(bucket_name, error_folder_path)
     
     if not files:
@@ -28,12 +34,13 @@ def consolidate_error_files(bucket_name, error_folder_path, raw_zone_folder_path
     for file in files:
         df = read_csv_file_from_gcs(bucket_name, file)
         
-        # Assuming the CSV file has a specific format where errors are listed in a known column
-        # Adjust 'error_column' to the name of the column that contains error messages
-        error_column = 'error'
-        if error_column in df.columns:
-            errors = df[error_column].value_counts().to_dict()
-            error_data[os.path.basename(file)] = errors
+        # Get the last column name (assuming it's the error column)
+        error_column = df.columns[-1]
+        print(f"Processing errors in column: {error_column} from file: {file}")
+        
+        # Count occurrences of each error type
+        errors = df[error_column].value_counts().to_dict()
+        error_data[os.path.basename(file)] = errors
     
     # Create a consolidated DataFrame
     consolidated_df = pd.DataFrame(error_data).fillna(0)
@@ -41,6 +48,7 @@ def consolidate_error_files(bucket_name, error_folder_path, raw_zone_folder_path
     
     # Convert the consolidated DataFrame to a CSV string
     output_csv_content = consolidated_df.to_csv()
+    print("Consolidated DataFrame created. Saving to GCS...")
 
     # Upload the consolidated CSV file back to GCS
     storage_client = storage.Client()
