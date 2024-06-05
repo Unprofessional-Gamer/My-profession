@@ -162,6 +162,6 @@ def start_data_lister():
     print("All files in the base path processed")
 
 if __name__ == "__main__":
-    print("**..... Starting the data lister ")
+    print("*************************Starting the data lister***************************************")
     start_data_lister()
-    print("**** Data lister completed.. ************")
+    print("****************************** Data lister completed***********************************")
