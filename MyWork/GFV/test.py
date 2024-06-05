@@ -37,20 +37,20 @@ def activate_data_cleaning(bucket_name, base_path, file_name):
 
     with beam.Pipeline(options=options) as p:
         file_read = (p
-                     | "Reading the file data" >> beam.io.ReadFromText(f"gs://{bucket_name}/{base_path}/Monthly/PROCESSED/{file_name}")
-                     | "Removing duplicates from the file data" >> beam.Distinct()
+                     | f"Reading the file data {file_name}" >> beam.io.ReadFromText(f"gs://{bucket_name}/{base_path}/{file_name}")
+                     | f"Removing duplicates from the file data {file_name}" >> beam.Distinct()
                      )
 
         processed_file_read = (file_read
-                               | "Splitting the input data into computational units" >> beam.Map(lambda x: x.split(','))
-                               | "Making the data into standard iterable units" >> beam.ParDo(RemoveDoubleQuotes())
-                               | "Removing the null values in file data" >> beam.ParDo(FilterNull())
-                               | "Removing the Unwanted characters in file data" >> beam.ParDo(RemoveUnwantedChars())
-                               | "Formatting as CSV output format" >> beam.Map(lambda x: ','.join(x))
+                               | f"Splitting the input data into computational units {file_name}" >> beam.Map(lambda x: x.split(','))
+                               | f"Making the data into standard iterable units {file_name}" >> beam.ParDo(RemoveDoubleQuotes())
+                               | f"Removing the null values in file data {file_name}" >> beam.ParDo(FilterNull())
+                               | f"Removing the Unwanted characters in file data {file_name}" >> beam.ParDo(RemoveUnwantedChars())
+                               | f"Formatting to get CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x))
                                )
 
         (processed_file_read
-         | "Writing to certified zone received folder" >> beam.io.WriteToText(
+         | f"Writing to certified zone received folder {file_name}" >> beam.io.WriteToText(
              f"gs://tnt01-odycda-bld-01-stb-eu-certzone-386745f0/{base_path}/Monthly/RECEIVED/{file_name}",
              file_name_suffix="",
              num_shards=1,
@@ -71,7 +71,7 @@ class NullCheck(beam.DoFn):
 
 class VolumeCheck(beam.DoFn):
     def process(self, element, vol_count):
-        if 0 < int(vol_count) < 1000:
+        if 0 < int(vol_count):
             element.extend(["Passed volume check"])
         else:
             element.extend(['Failed volume check'])
@@ -130,7 +130,7 @@ def start_checks():
 
                 passed_records = (null_check
                                   | f"Filter records with pass status {file_name}" >> beam.Filter(check_pass_status)
-                                  | "Formatting as CSV output format" >> beam.Map(lambda x: ','.join(x[:-2]))
+                                  | f"Formatting into CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x[:-2]))
                                   | f"Writing to cauzone processed folder {file_name}" >> beam.io.WriteToText(
                                       f"gs://{bucket_name}/{base_path}/Monthly/PROCESSED/{file_name[:-4]}.csv",
                                       file_name_suffix='',
@@ -141,7 +141,7 @@ def start_checks():
 
                 failed_records = (null_check
                                   | f"Filter records with fail status {file_name}" >> beam.Filter(check_fail_status)
-                                  | "Formatting as CSV output format" >> beam.Map(lambda x: ','.join(x))
+                                  | f"Formatting as CSV output format {file_name}" >> beam.Map(lambda x: ','.join(x))
                                   | f"Writing to cauzone error folder {file_name}" >> beam.io.WriteToText(
                                       f"gs://{bucket_name}/{base_path}/Monthly/ERROR/{file_name[:-4]}_error.csv",
                                       file_name_suffix='',
@@ -183,7 +183,6 @@ def start_data_lister():
     print("Proceeding with next year data")
     print("All data finished \nProceeding with next dataset")
     print("All the datasets finished")
-    change
     print("All the datasets finished")
     change_mime_type_for_all('tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181', 'thParty/MFVS/GFV/update/Monthly/PROCESSED/')
     change_mime_type_for_all('tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181', 'thParty/MFVS/GFV/update/Monthly/ERROR/')

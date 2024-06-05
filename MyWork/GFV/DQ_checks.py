@@ -37,8 +37,8 @@ def activate_data_cleaning(bucket_name, base_path, file_name):
 
     with beam.Pipeline(options=options) as p:
         file_read = (p
-                     | "Reading the file data" >> beam.io.ReadFromText(f"gs://{bucket_name}/{base_path}/{file_name}")
-                     | "Removing duplicates from the file data" >> beam.Distinct()
+                     | f"Reading the file data {file_name}" >> beam.io.ReadFromText(f"gs://{bucket_name}/{base_path}/{file_name}")
+                     | f"Removing duplicates from the file data {file_name}" >> beam.Distinct()
                      )
 
         processed_file_read = (file_read
@@ -50,7 +50,7 @@ def activate_data_cleaning(bucket_name, base_path, file_name):
                                )
 
         (processed_file_read
-         | "Writing to certified zone received folder" >> beam.io.WriteToText(f"gs://tnt01-odycda-bld-01-stb-eu-certzone-386745f0/{base_path}/RECEIVED/{file_name}",
+         | f"Writing to certified zone received folder {file_name}" >> beam.io.WriteToText(f"gs://tnt01-odycda-bld-01-stb-eu-certzone-386745f0/{base_path}/RECEIVED/{file_name}",
                                                                               file_name_suffix="",
                                                                               num_shards=1,
                                                                               shard_name_template="-")
