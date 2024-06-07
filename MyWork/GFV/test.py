@@ -15,6 +15,19 @@ class FilterNull(beam.DoFn):
         else:
             element.append('Passed null check')
         return [element]
+"""class FilterNull(beam.DoFn):
+    def process(self, element):
+        null_values = ['null', None, 'Nan', 'NONE', 'Null', 'n', '']
+        non_empty_columns = [col for col in element if col.strip() not in null_values]
+        
+        # If the row has non-empty columns, check each column
+        if len(non_empty_columns) < len(element):  # Means there are empty columns
+            element.append('Failed null check')
+        else:
+            element.append('Passed null check')
+            
+        return [element]"""
+
 
 class RemoveUnwantedChars(beam.DoFn):
     def process(self, element):
