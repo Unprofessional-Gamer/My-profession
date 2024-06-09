@@ -1,74 +1,49 @@
 from google.cloud import storage
-import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions
+import csv
 
-def count_records(element):
-    yield len(element)
+def move_file(source_bucket_name, source_blob_name, destination_bucket_name, destination_blob_name):
+    """Moves a blob from one bucket to another."""
+    storage_client = storage.Client()
+    source_bucket = storage_client.bucket(source_bucket_name)
+    source_blob = source_bucket.blob(source_blob_name)
+    destination_bucket = storage_client.bucket(destination_bucket_name)
 
-def move_file_based_on_record_count(bucket_name, base_path, file_name, record_count):
-    if record_count < 100:
-        destination_folder = "ERROR"
-    else:
-        destination_folder = "PROCESSED"
-
-    client = storage.Client()
-    blob = client.bucket(bucket_name).blob(f"{base_path}/Monthly/{destination_folder}/{file_name}")
-    source_blob = client.bucket(bucket_name).blob(f"{base_path}/Monthly/RECEIVED/{file_name}")
-
-    blob.copy(source_blob)
+    source_bucket.copy_blob(source_blob, destination_bucket, destination_blob_name)
     source_blob.delete()
 
-def start_checks():
-    options = PipelineOptions(
-        project='tnt01-odycda-bld-01-1681',
-        runner='DataflowRunner',
-        job_name='rawtocertcleaning_all_files',
-        region='europe-west2',
-        staging_location='gs://tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181/EXTERNAL/MFVS/PRICING/dataflow/staging',
-        service_account_email='svc-dataflow-runner@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
-        dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptokeys/keyhsm-kms-tatei-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88b/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
-        num_workers=1,
-        max_num_workers=3,
-        use_public_ips=False,
-        autoscaling_algorithm='THROUGHPUT_BASED',
-        save_main_session=True
-    )
+def perform_dq_checks(project_id, source_bucket, source_folder_path, destination_bucket, destination_folder_path):
+    storage_client = storage.Client(project=project_id)
 
-    with beam.Pipeline(options=options) as p:
-        bucket_name = 'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181'
-        base_path = 'EXTERNAL/MFVS/PRICING'
-        folder_path = f'{base_path}/Monthly/RECEIVED/'
-        client = storage.Client()
-        blobs = client.list_blobs(bucket_name, prefix=folder_path)
+    # List all files in the source folder
+    source_bucket = storage_client.get_bucket(source_bucket)
+    blobs = source_bucket.list_blobs(prefix=source_folder_path)
 
-        for blob in blobs:
-            if blob.name.endswith('.csv'):
-                file_name = blob.name.split('/')[-1]
-                input = (p
-                          | f"Reading the file data {file_name}" >> beam.io.ReadFromText(blob.name)
-                          | "Split values" >> beam.Map(lambda x: x.split(','))
-                          )
+    for blob in blobs:
+        print(f"Processing file: {blob.name}")
 
-                record_count = (input
-                              | f"Count records {file_name}" >> beam.ParDo(count_records)
-                              | f"Sum record counts {file_name}" >> beam.combiners.Sum.Globally()
-                            )
+        # Download the CSV file
+        blob_data = blob.download_as_string()
+        csv_data = blob_data.decode('utf-8').splitlines()
 
-                result = p.run()
-                result.wait_until_finish()
+        # Count the records
+        csv_reader = csv.reader(csv_data)
+        record_count = sum(1 for row in csv_reader)
 
-                record_count_value = result.metrics().query(beam.metrics.MetricsFilter().with_name('processed_records')).count
-                
-                print(f"Record count for {file_name}: {record_count_value}")
+        # Determine destination folder path
+        if record_count < 100:
+            destination_path = destination_folder_path + '/Error/' + blob.name.split('/')[-1]
+        else:
+            destination_path = destination_folder_path + '/Processed/' + blob.name.split('/')[-1]
 
-                move_file_based_on_record_count(bucket_name, base_path, file_name, record_count_value)
-
-def start_data_lister():
-    start_checks()
-    print("All files in the base path processed")
+        # Move the file to the appropriate folder
+        move_file(source_bucket.name, blob.name, destination_bucket, destination_path)
+        print(f"File moved to: {destination_path}")
 
 if __name__ == "__main__":
-    print("*************************Starting the data lister***************************************")
-    start_data_lister()
-    print("****************************** Data lister completed***********************************")
+    project_id = "project_id"
+    source_bucket = "raw zone bucket"
+    source_folder_path = "3rdParty/MFVS/GFV/testing"
+    destination_bucket = "certify zone bucket"
+    destination_folder_path = "3rdParty/MFVS/GFV/Data_Quality"
+
+    perform_dq_checks(project_id, source_bucket, source_folder_path, destination_bucket, destination_folder_path)
