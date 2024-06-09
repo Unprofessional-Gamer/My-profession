@@ -11,7 +11,7 @@ def move_file_based_on_record_count(bucket_name, base_path, file_name, record_co
     else:
         destination_folder = "PROCESSED"
 
-    client = storage.Client("tnt01-odycda-bld-01-1681")
+    client = storage.Client()
     blob = client.bucket(bucket_name).blob(f"{base_path}/Monthly/{destination_folder}/{file_name}")
     source_blob = client.bucket(bucket_name).blob(f"{base_path}/Monthly/RECEIVED/{file_name}")
 
@@ -37,16 +37,16 @@ def start_checks():
 
     with beam.Pipeline(options=options) as p:
         bucket_name = 'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181'
-        base_path = 'thParty/MFVS/GFV/update'
+        base_path = 'EXTERNAL/MFVS/PRICING'
         folder_path = f'{base_path}/Monthly/RECEIVED/'
-        client = storage.Client("tnt01-odycda-bld-01-1681")
-        blob_list = client.list_blobs(bucket_name, prefix=folder_path)
+        client = storage.Client()
+        blobs = client.list_blobs(bucket_name, prefix=folder_path)
 
-        for blob in blob_list:
+        for blob in blobs:
             if blob.name.endswith('.csv'):
                 file_name = blob.name.split('/')[-1]
                 input = (p
-                          | f"Reading the file data {file_name}" >> beam.io.ReadFromText(f"gs://{bucket_name}/{blob.name}")
+                          | f"Reading the file data {file_name}" >> beam.io.ReadFromText(blob.name)
                           | "Split values" >> beam.Map(lambda x: x.split(','))
                           )
 
