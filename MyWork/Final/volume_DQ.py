@@ -60,14 +60,7 @@ def activate_data_cleaning(bucket_name, base_path, file_name):
         result = p.run()
         result.wait_until_finish()
 
-        check_status = True  # Assuming all checks passed 
-
-        if check_status:
-            print(f"All checks passed for {file_name}")
-            activate_data_cleaning(bucket_name, base_path, file_name)
-            print("Audit checks completed")
-        else:
-            print(f"Some checks failed for {file_name}")
+        print(f"Data cleaning process completed for {file_name}")
 
 def start_checks():
     options = PipelineOptions(
@@ -91,11 +84,15 @@ def start_checks():
         base_path = 'thParty/MFVS/GFV/update'
         folder_path = f'{base_path}/Monthly/RECEIVED/'
         client = storage.Client("tnt01-odycda-bld-01-1681")
+        
+        print(f"Listing files in the folder: {folder_path}")
         blob_list = client.list_blobs(bucket_name, prefix=folder_path)
 
         for blob in blob_list:
             if blob.name.endswith('.csv'):
                 file_name = blob.name.split('/')[-1]
+                print(f"Processing file: {file_name}")
+
                 input = (p
                           | f"Reading the file data {file_name}" >> beam.io.ReadFromText(f"gs://{bucket_name}/{blob.name}")
                           | "Count records" >> beam.ParDo(CountRecords())
@@ -123,6 +120,8 @@ def start_checks():
                 result = p.run()
                 result.wait_until_finish()
 
+                print(f"File processing completed: {file_name}")
+
                 check_status = True  # Assuming all checks passed 
 
                 if check_status:
@@ -133,10 +132,9 @@ def start_checks():
                     print(f"Some checks failed for {file_name}")
 
 def start_data_lister():
+    print("*************************Starting the data lister***************************************")
     start_checks()
-    print("All files in the base path processed")
+    print("****************************** Data lister completed***********************************")
 
 if __name__ == "__main__":
-    print("*************************Starting the data lister***************************************")
     start_data_lister()
-    print("****************************** Data lister completed***********************************")
