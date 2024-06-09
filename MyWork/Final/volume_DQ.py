@@ -1,54 +1,42 @@
 from google.cloud import storage
+import io
 import csv
 
-def move_file(source_bucket_name, source_blob_name, destination_bucket_name, destination_blob_name):
-    """Moves a blob from one bucket to another."""
-    storage_client = storage.Client()
-    source_bucket = storage_client.bucket(source_bucket_name)
-    source_blob = source_bucket.blob(source_blob_name)
-    destination_bucket = storage_client.bucket(destination_bucket_name)
+def count_records(csv_blob):
+    """Count the total number of records in a CSV file."""
+    blob_content = csv_blob.download_as_string()
+    csv_data = io.StringIO(blob_content.decode('utf-8'))
+    csv_reader = csv.reader(csv_data)
+    record_count = sum(1 for row in csv_reader)
+    print(f"File {csv_blob.name} has {record_count} records.")
+    return record_count
 
-    source_bucket.copy_blob(source_blob, destination_bucket, destination_blob_name)
+def move_file(source_blob, destination_bucket, destination_folder):
+    """Move a file to the specified destination bucket and folder."""
+    destination_blob_name = destination_folder + "/" + source_blob.name.split("/")[-1]
+    destination_bucket.copy_blob(source_blob, destination_bucket, destination_blob_name)
+    source_blob.delete()
+    print(f"File {source_blob.name} moved to {destination_folder}.")
 
-def get_approximate_record_count(blob_metadata):
-    """Estimates the record count based on blob size."""
-    # Assuming 1000 bytes per record
-    approx_record_count = int(blob_metadata['size']) // 1000
-    return approx_record_count
-
-def perform_dq_checks(project_id, source_bucket, source_folder_path, destination_bucket, destination_folder_path):
+def main(project_id, source_bucket_name, source_folder_path, destination_bucket_name, destination_folder_path):
+    """Main function to perform data quality checks and move files."""
     storage_client = storage.Client(project=project_id)
+    source_bucket = storage_client.get_bucket(source_bucket_name)
+    destination_bucket = storage_client.get_bucket(destination_bucket_name)
 
-    # List all files in the source folder
-    source_bucket = storage_client.get_bucket(source_bucket)
-    blobs = source_bucket.list_blobs(prefix=source_folder_path)
-
-    for blob in blobs:
-        print(f"Processing file: {blob.name}")
-
-        # Get the blob metadata to get the size
-        blob_metadata = blob.metadata
-
-        # Calculate approximate record count based on blob size
-        approx_record_count = get_approximate_record_count(blob_metadata)
-
-        print(f"Approximate record count: {approx_record_count}")
-
-        # Determine destination folder path
-        if approx_record_count < 100:
-            destination_path = destination_folder_path + '/Error/' + blob.name.split('/')[-1]
-        else:
-            destination_path = destination_folder_path + '/Processed/' + blob.name.split('/')[-1]
-
-        # Move the file to the appropriate folder
-        move_file(source_bucket.name, blob.name, destination_bucket, destination_path)
-        print(f"File moved to: {destination_path}")
+    for blob in source_bucket.list_blobs(prefix=source_folder_path):
+        if blob.name.endswith('.csv'):
+            record_count = count_records(blob)
+            if record_count < 100:
+                move_file(blob, destination_bucket, destination_folder_path + "/Error")
+            else:
+                move_file(blob, destination_bucket, destination_folder_path + "/Processed")
 
 if __name__ == "__main__":
     project_id = "project_id"
-    source_bucket = "raw zone bucket"
-    source_folder_path = "thParty/MFVS/GFV/testing"
-    destination_bucket = "certify zone bucket"
-    destination_folder_path = "thParty/MFVS/GFV/Data_Quality"
+    source_bucket_name = "raw zone bucket"
+    source_folder_path = "3rdParty/MFVS/GFV/testing"
+    destination_bucket_name = "certify zone bucket"
+    destination_folder_path = "3rdParty/MFVS/GFV/Data_Quality"
 
-    perform_dq_checks(project_id, source_bucket, source_folder_path, destination_bucket, destination_folder_path)
+    main(project_id, source_bucket_name, source_folder_path, destination_bucket_name, destination_folder_path)
