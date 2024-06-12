@@ -90,7 +90,7 @@ class MoveProcessedFiles(beam.DoFn):
     def __init__(self, raw_zone_bucket_name, processed_folder, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
         self.processed_folder = processed_folder
-        self.certify_zone_bucket_name = certify_zone_bucket_name
+        self.certify_zone_bucket_name = certify_folder_path
         self.certify_folder_path = certify_folder_path
 
     def setup(self):
