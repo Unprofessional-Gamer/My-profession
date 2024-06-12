@@ -43,12 +43,12 @@ class VolumeCheckAndClassify(beam.DoFn):
             report_data = [current_date, filename, record_count]
             yield beam.pvalue.TaggedOutput('processed', report_data)
         
-        # Move the file to the appropriate folder and set content type to 'text/csv'
+        # Move the file to the appropriate folder
         destination_blob = bucket.blob(destination_blob_name)
-        destination_blob.upload_from_string(content, content_type='text/csv')
+        destination_blob.upload_from_string(content)
         blob.delete()
 
-        yield file_path
+        yield destination_blob_name
 
 class CreateOrAppendReport(beam.DoFn):
     def __init__(self, raw_zone_bucket_name, report_folder_path, report_filename):
@@ -82,14 +82,13 @@ class CreateOrAppendReport(beam.DoFn):
         
         writer.writerows(report_data_list)
         
-        # Upload the updated report content and set content type to 'text/csv'
-        report_blob.upload_from_string(updated_content.getvalue(), content_type='text/csv')
+        # Upload the updated report content
+        report_blob.upload_from_string(updated_content.getvalue())
         print(f"Report {self.report_filename} updated successfully")
 
 class MoveProcessedFiles(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, processed_folder, certify_zone_bucket_name, certify_folder_path):
+    def __init__(self, raw_zone_bucket_name, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
-        self.processed_folder = processed_folder
         self.certify_zone_bucket_name = certify_zone_bucket_name
         self.certify_folder_path = certify_folder_path
 
@@ -101,15 +100,12 @@ class MoveProcessedFiles(beam.DoFn):
         certify_bucket = self.storage_client.bucket(self.certify_zone_bucket_name)
         blob = raw_bucket.blob(file_path)
 
-        if file_path.startswith(self.processed_folder):
-            destination_blob_name = f"{self.certify_folder_path}/{file_path.split('/')[-1]}"
-            certify_blob = certify_bucket.blob(destination_blob_name)
-            
-            # Copy blob content and set content type to 'text/csv'
-            certify_blob.rewrite(blob, content_type='text/csv')
-            blob.delete()
-            print(f"Moved processed file {file_path} to certify zone bucket")
-            yield file_path
+        destination_blob_name = f"{self.certify_folder_path}/{file_path.split('/')[-1]}"
+        certify_blob = certify_bucket.blob(destination_blob_name)
+        certify_blob.rewrite(blob)
+        blob.delete()
+        print(f"Moved processed file {file_path} to certify zone bucket")
+        yield file_path
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify_bucket_name, certify_folder_path, report_folder_path):
     # Configure pipeline options for DataflowRunner
@@ -178,7 +174,6 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     classified.processed | 'Move Processed Files' >> beam.ParDo(
         MoveProcessedFiles(
             raw_zone_bucket_name=raw_zone_bucket_name,
-            processed_folder=f'{raw_zone_folder_path}/processed',
             certify_zone_bucket_name=certify_bucket_name,
             certify_folder_path=certify_folder_path
         )
