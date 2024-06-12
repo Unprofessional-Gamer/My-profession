@@ -17,7 +17,7 @@ class VolumeCheckAndClassify(beam.DoFn):
         self.error_folder = error_folder
 
     def setup(self):
-        self.storage_client = storage.Client()
+        self.storage_client = storage.Client(project_id)
 
     def process(self, file_path):
         print(f"Processing file: {file_path}")
@@ -43,9 +43,9 @@ class VolumeCheckAndClassify(beam.DoFn):
             report_data = [current_date, filename, record_count]
             yield beam.pvalue.TaggedOutput('processed', report_data)
         
-        # Move the file to the appropriate folder
+        # Move the file to the appropriate folder and set content type to 'text/csv'
         destination_blob = bucket.blob(destination_blob_name)
-        destination_blob.upload_from_string(content)
+        destination_blob.upload_from_string(content, content_type='text/csv')
         blob.delete()
 
         yield file_path
@@ -57,7 +57,7 @@ class CreateOrAppendReport(beam.DoFn):
         self.report_filename = report_filename
 
     def setup(self):
-        self.storage_client = storage.Client()
+        self.storage_client = storage.Client(project_id)
 
     def process(self, report_data_list):
         print(f"Creating or appending report: {self.report_filename}")
@@ -82,8 +82,8 @@ class CreateOrAppendReport(beam.DoFn):
         
         writer.writerows(report_data_list)
         
-        # Upload the updated report content
-        report_blob.upload_from_string(updated_content.getvalue())
+        # Upload the updated report content and set content type to 'text/csv'
+        report_blob.upload_from_string(updated_content.getvalue(), content_type='text/csv')
         print(f"Report {self.report_filename} updated successfully")
 
 class MoveProcessedFiles(beam.DoFn):
@@ -94,7 +94,7 @@ class MoveProcessedFiles(beam.DoFn):
         self.certify_folder_path = certify_folder_path
 
     def setup(self):
-        self.storage_client = storage.Client()
+        self.storage_client = storage.Client(project_id)
 
     def process(self, file_path):
         raw_bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
@@ -104,7 +104,9 @@ class MoveProcessedFiles(beam.DoFn):
         if file_path.startswith(self.processed_folder):
             destination_blob_name = f"{self.certify_folder_path}/{file_path.split('/')[-1]}"
             certify_blob = certify_bucket.blob(destination_blob_name)
-            certify_blob.rewrite(blob)
+            
+            # Copy blob content and set content type to 'text/csv'
+            certify_blob.rewrite(blob, content_type='text/csv')
             blob.delete()
             print(f"Moved processed file {file_path} to certify zone bucket")
             yield file_path
@@ -127,7 +129,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     )
 
     print("Initializing Google Cloud Storage client")
-    storage_client = storage.Client()
+    storage_client = storage.Client(project_id)
     bucket = storage_client.get_bucket(raw_zone_bucket_name)
     blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv') and '/' not in blob.name[len(raw_zone_folder_path):].strip('/')]
 
@@ -173,7 +175,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     )
 
     # Move the processed files to the certify zone bucket
-    files | 'Move Processed Files' >> beam.ParDo(
+    classified.processed | 'Move Processed Files' >> beam.ParDo(
         MoveProcessedFiles(
             raw_zone_bucket_name=raw_zone_bucket_name,
             processed_folder=f'{raw_zone_folder_path}/processed',
