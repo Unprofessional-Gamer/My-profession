@@ -17,7 +17,7 @@ class VolumeCheckAndClassify(beam.DoFn):
         self.error_folder = f"{classified_folder_path}/error"
 
     def setup(self):
-        self.storage_client = storage.Client(project_id)
+        self.storage_client = storage.Client()
 
     def process(self, file_path):
         print(f"Processing file: {file_path}")
@@ -48,7 +48,7 @@ class VolumeCheckAndClassify(beam.DoFn):
         destination_blob.upload_from_string(content)
         blob.delete()
 
-        yield destination_blob_name
+        yield file_path
 
 class CreateOrAppendReport(beam.DoFn):
     def __init__(self, raw_zone_bucket_name, report_folder_path, report_filename):
@@ -57,7 +57,7 @@ class CreateOrAppendReport(beam.DoFn):
         self.report_filename = report_filename
 
     def setup(self):
-        self.storage_client = storage.Client(project_id)
+        self.storage_client = storage.Client()
 
     def process(self, report_data_list):
         print(f"Creating or appending report: {self.report_filename}")
@@ -86,7 +86,7 @@ class CreateOrAppendReport(beam.DoFn):
         report_blob.upload_from_string(updated_content.getvalue())
         print(f"Report {self.report_filename} updated successfully")
 
-class MoveProcessedFiles(beam.DoFn):
+class CopyAndDeleteProcessedFiles(beam.DoFn):
     def __init__(self, raw_zone_bucket_name, processed_folder, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
         self.processed_folder = processed_folder
@@ -94,30 +94,38 @@ class MoveProcessedFiles(beam.DoFn):
         self.certify_folder_path = certify_folder_path
 
     def setup(self):
-        self.storage_client = storage.Client(project_id)
+        self.storage_client = storage.Client()
 
     def process(self, file_path):
         raw_bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
         certify_bucket = self.storage_client.bucket(self.certify_zone_bucket_name)
         blob = raw_bucket.blob(file_path)
-
-        destination_blob_name = f"{self.certify_folder_path}/{file_path.split('/')[-1]}"
-        certify_blob = certify_bucket.blob(destination_blob_name)
-        certify_blob.rewrite(blob)
-        blob.delete()
-        print(f"Moved processed file {file_path} to certify zone bucket")
-        yield file_path
+        filename = file_path.split("/")[-1]
+        
+        if file_path.startswith(self.processed_folder):
+            destination_blob_name = f"{self.certify_folder_path}/{filename}"
+            certify_blob = certify_bucket.blob(destination_blob_name)
+            
+            # Copy the blob to the destination bucket
+            certify_blob.rewrite(blob)
+            print(f"Copied processed file {file_path} to certify zone bucket")
+            
+            # Delete the blob from the source bucket
+            blob.delete()
+            print(f"Deleted processed file {file_path} from raw zone bucket")
+            
+            yield file_path
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_bucket_name, certify_folder_path, report_folder_path):
     # Configure pipeline options for DataflowRunner
     options = PipelineOptions(
         project=project_id,
-        runner="DirectRunner",
+        runner="DataflowRunner",
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
         dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kcl-01-bld-01',
+        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
         num_workers=1,
         max_num_workers=4,
         use_public_ips=False,
@@ -126,7 +134,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classif
     )
 
     print("Initializing Google Cloud Storage client")
-    storage_client = storage.Client(project_id)
+    storage_client = storage.Client()
     bucket = storage_client.get_bucket(raw_zone_bucket_name)
     blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv') and '/' not in blob.name[len(raw_zone_folder_path):].strip('/')]
 
@@ -170,9 +178,9 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classif
         )
     )
 
-    # Move the processed files to the certify zone bucket
-    processed_files = classified.processed | 'Move Processed Files' >> beam.ParDo(
-        MoveProcessedFiles(
+    # Copy the processed files to the certify zone bucket and delete from the raw zone bucket
+    files | 'Copy and Delete Processed Files' >> beam.ParDo(
+        CopyAndDeleteProcessedFiles(
             raw_zone_bucket_name=raw_zone_bucket_name,
             processed_folder=f'{classified_folder_path}/processed',
             certify_zone_bucket_name=certify_bucket_name,
