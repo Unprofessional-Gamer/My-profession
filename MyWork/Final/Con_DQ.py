@@ -17,7 +17,6 @@ class VolumeCheckAndClassify(beam.DoFn):
         self.error_folder = error_folder
 
     def setup(self):
-        # Setup the storage client for Google Cloud Storage
         self.storage_client = storage.Client()
 
     def process(self, file_path):
@@ -52,19 +51,19 @@ class VolumeCheckAndClassify(beam.DoFn):
         yield file_path
 
 class CreateOrAppendReport(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, report_filename):
+    def __init__(self, raw_zone_bucket_name, report_folder_path, report_filename):
         self.raw_zone_bucket_name = raw_zone_bucket_name
+        self.report_folder_path = report_folder_path
         self.report_filename = report_filename
 
     def setup(self):
-        # Setup the storage client for Google Cloud Storage
         self.storage_client = storage.Client()
 
     def process(self, report_data_list):
         print(f"Creating or appending report: {self.report_filename}")
         
         bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
-        report_blob = bucket.blob(f"reports/{self.report_filename}")
+        report_blob = bucket.blob(f"{self.report_folder_path}/{self.report_filename}")
 
         # Download existing report content if available
         existing_content = ""
@@ -77,6 +76,9 @@ class CreateOrAppendReport(beam.DoFn):
 
         if existing_content:
             writer.writerows(csv.reader(existing_content.splitlines()))
+        else:
+            # Add header if the report is being created for the first time
+            writer.writerow(["DD-MM-YY", "Filename", "Records"])
         
         writer.writerows(report_data_list)
         
@@ -85,14 +87,13 @@ class CreateOrAppendReport(beam.DoFn):
         print(f"Report {self.report_filename} updated successfully")
 
 class MoveProcessedFiles(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, processed_folder, certify_zone_bucket_name, received_folder):
+    def __init__(self, raw_zone_bucket_name, processed_folder, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
         self.processed_folder = processed_folder
         self.certify_zone_bucket_name = certify_zone_bucket_name
-        self.received_folder = received_folder
+        self.certify_folder_path = certify_folder_path
 
     def setup(self):
-        # Setup the storage client for Google Cloud Storage
         self.storage_client = storage.Client()
 
     def process(self, file_path):
@@ -101,23 +102,23 @@ class MoveProcessedFiles(beam.DoFn):
         blob = raw_bucket.blob(file_path)
 
         if file_path.startswith(self.processed_folder):
-            destination_blob_name = f"{self.received_folder}/{file_path.split('/')[-1]}"
+            destination_blob_name = f"{self.certify_folder_path}/{file_path.split('/')[-1]}"
             certify_blob = certify_bucket.blob(destination_blob_name)
             certify_blob.rewrite(blob)
             blob.delete()
             print(f"Moved processed file {file_path} to certify zone bucket")
             yield file_path
 
-def volume_count_check(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify_zone_bucket_name, certify_received_folder):
+def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify_bucket_name, certify_folder_path, report_folder_path):
     # Configure pipeline options for DataflowRunner
     options = PipelineOptions(
         project=project_id,
-        runner="DataflowRunner",
+        runner="DirectRunner",
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
         dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc-01-bld-01',
+        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kcl-01-bld-01',
         num_workers=1,
         max_num_workers=4,
         use_public_ips=False,
@@ -128,7 +129,7 @@ def volume_count_check(project_id, raw_zone_bucket_name, raw_zone_folder_path, c
     print("Initializing Google Cloud Storage client")
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(raw_zone_bucket_name)
-    blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv')]
+    blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv') and '/' not in blob.name[len(raw_zone_folder_path):].strip('/')]
 
     print(f"Found {len(blobs)} CSV files in raw zone folder: {raw_zone_folder_path}")
     
@@ -143,8 +144,8 @@ def volume_count_check(project_id, raw_zone_bucket_name, raw_zone_folder_path, c
         | 'Volume Check and Classify' >> beam.ParDo(
             VolumeCheckAndClassify(
                 raw_zone_bucket_name=raw_zone_bucket_name,
-                processed_folder='processed',
-                error_folder='error'
+                processed_folder=f'{raw_zone_folder_path}/processed',
+                error_folder=f'{raw_zone_folder_path}/error'
             )
         ).with_outputs('processed', 'error', main='main')
     )
@@ -156,7 +157,8 @@ def volume_count_check(project_id, raw_zone_bucket_name, raw_zone_folder_path, c
     # Create or append to the consolidated report for processed files
     processed_reports | 'Create Processed Report' >> beam.ParDo(
         CreateOrAppendReport(
-            raw_zone_bucket_name,
+            raw_zone_bucket_name=raw_zone_bucket_name,
+            report_folder_path=report_folder_path,
             report_filename=REPORT_PROCESSED_FILENAME
         )
     )
@@ -164,7 +166,8 @@ def volume_count_check(project_id, raw_zone_bucket_name, raw_zone_folder_path, c
     # Create or append to the consolidated report for error files
     error_reports | 'Create Error Report' >> beam.ParDo(
         CreateOrAppendReport(
-            raw_zone_bucket_name,
+            raw_zone_bucket_name=raw_zone_bucket_name,
+            report_folder_path=report_folder_path,
             report_filename=REPORT_ERROR_FILENAME
         )
     )
@@ -172,8 +175,10 @@ def volume_count_check(project_id, raw_zone_bucket_name, raw_zone_folder_path, c
     # Move the processed files to the certify zone bucket
     files | 'Move Processed Files' >> beam.ParDo(
         MoveProcessedFiles(
-            raw_zone_bucket_name,
-            processed_folder='processed',certify_zone_bucket_name=certify_zone_bucket_name,received_folder=certify_received_folder
+            raw_zone_bucket_name=raw_zone_bucket_name,
+            processed_folder=f'{raw_zone_folder_path}/processed',
+            certify_zone_bucket_name=certify_bucket_name,
+            certify_folder_path=certify_folder_path
         )
     )
 
@@ -186,10 +191,16 @@ if __name__ == "__main__":
     project_id = 'your-gcp-project-id'
     raw_zone_bucket_name = 'your-raw-zone-bucket'
     raw_zone_folder_path = 'your-raw-folder-path'
-    certify_zone_bucket_name = 'your-consumer-bucket'
-    certify_received_folder = 'your-received-folder-path'
+    certify_bucket_name = 'your-certify-bucket'
+    certify_folder_path = 'your-certify-folder-path/received'
+    report_folder_path = 'your-report-folder-path'
 
     # Run the pipeline
-    print("*****************************Data Quality Check initiated******************************")
-    volume_count_check(project_id,raw_zone_bucket_name,raw_zone_folder_path,certify_zone_bucket_name,certify_received_folder)
-    print("*****************************Data Quality Check Finished******************************")
+    run_pipeline(
+        project_id=project_id,
+        raw_zone_bucket_name=raw_zone_bucket_name,
+        raw_zone_folder_path=raw_zone_folder_path,
+        certify_bucket_name=certify_bucket_name,
+        certify_folder_path=certify_folder_path,
+        report_folder_path=report_folder_path
+    )
