@@ -11,11 +11,10 @@ REPORT_PROCESSED_FILENAME = "consolidated_report_processed.csv"
 REPORT_ERROR_FILENAME = "consolidated_report_error.csv"
 
 class VolumeCheckAndClassify(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, classified_folder_path, certify_bucket_name, certify_folder_path):
+    def __init__(self, raw_zone_bucket_name, error_folder_path, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
-        self.error_folder = f"{classified_folder_path}/error"
-        self.certify_bucket_name = certify_bucket_name
-        self.certify_folder_path = certify_folder_path
+        self.error_folder = error_folder_path
+        self.certify_folder = certify_folder_path
 
     def setup(self):
         self.storage_client = storage.Client(project_id)
@@ -40,17 +39,15 @@ class VolumeCheckAndClassify(beam.DoFn):
             yield beam.pvalue.TaggedOutput('error', report_data)
         else:
             print(f"File {filename} has 100 or more records, moving to processed folder")
-            processed_bucket = self.storage_client.bucket(self.certify_bucket_name)
-            destination_blob_name = f"{self.certify_folder_path}/{filename}"
+            destination_blob_name = f"{self.certify_folder}/{filename}"
             report_data = [current_date, filename, record_count]
             yield beam.pvalue.TaggedOutput('processed', report_data)
+        
+        # Move the file to the appropriate folder
+        destination_blob = bucket.blob(destination_blob_name)
+        destination_blob.upload_from_string(content)
+        #blob.delete()
 
-            # Move the processed file to the certify bucket
-            destination_blob = processed_bucket.blob(destination_blob_name)
-            destination_blob.upload_from_string(content)
-
-        # Delete the original file
-        blob.delete()
         yield file_path
 
 class CreateOrAppendReport(beam.DoFn):
@@ -89,7 +86,7 @@ class CreateOrAppendReport(beam.DoFn):
         report_blob.upload_from_string(updated_content.getvalue())
         print(f"Report {self.report_filename} updated successfully")
 
-def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_bucket_name, certify_folder_path, report_folder_path):
+def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_folder_path, report_folder_path):
     # Configure pipeline options for DataflowRunner
     options = PipelineOptions(
         project=project_id,
@@ -124,8 +121,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classif
         | 'Volume Check and Classify' >> beam.ParDo(
             VolumeCheckAndClassify(
                 raw_zone_bucket_name=raw_zone_bucket_name,
-                classified_folder_path=classified_folder_path,
-                certify_bucket_name=certify_bucket_name,
+                error_folder_path=f"{classified_folder_path}/error",
                 certify_folder_path=certify_folder_path
             )
         ).with_outputs('processed', 'error', main='main')
@@ -162,9 +158,8 @@ if __name__ == "__main__":
     project_id = 'your-gcp-project-id'
     raw_zone_bucket_name = 'your-raw-zone-bucket'
     raw_zone_folder_path = 'your-raw-folder-path'
-    classified_folder_path = 'your-classified-folder-path'  # Placeholder for classified files (error)
-    certify_bucket_name = 'your-certify-bucket'
-    certify_folder_path = 'your-certify-folder-path/received'  # Directly place processed files here
+    classified_folder_path = 'your-classified-folder-path'  # Placeholder for classified files (processed, error)
+    certify_folder_path = 'your-certify-folder-path'  # New placeholder for processed files directly
     report_folder_path = 'your-report-folder-path'
 
     # Run the pipeline
@@ -173,7 +168,6 @@ if __name__ == "__main__":
         raw_zone_bucket_name=raw_zone_bucket_name,
         raw_zone_folder_path=raw_zone_folder_path,
         classified_folder_path=classified_folder_path,
-        certify_bucket_name=certify_bucket_name,
         certify_folder_path=certify_folder_path,
         report_folder_path=report_folder_path
     )
