@@ -17,7 +17,7 @@ class VolumeCheckAndClassify(beam.DoFn):
         self.error_folder = error_folder
 
     def setup(self):
-        self.storage_client = storage.Client(project_id)
+        self.storage_client = storage.Client()
 
     def process(self, file_path):
         print(f"Processing file: {file_path}")
@@ -57,7 +57,7 @@ class CreateOrAppendReport(beam.DoFn):
         self.report_filename = report_filename
 
     def setup(self):
-        self.storage_client = storage.Client(project_id)
+        self.storage_client = storage.Client()
 
     def process(self, report_data_list):
         print(f"Creating or appending report: {self.report_filename}")
@@ -94,7 +94,7 @@ class MoveProcessedFiles(beam.DoFn):
         self.certify_folder_path = certify_folder_path
 
     def setup(self):
-        self.storage_client = storage.Client(project_id)
+        self.storage_client = storage.Client()
 
     def process(self, file_path):
         raw_bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
@@ -115,12 +115,12 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     # Configure pipeline options for DataflowRunner
     options = PipelineOptions(
         project=project_id,
-        runner="DirectRunner",
+        runner="DataflowRunner",
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
         dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kcl-01-bld-01',
+        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
         num_workers=1,
         max_num_workers=4,
         use_public_ips=False,
@@ -129,7 +129,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     )
 
     print("Initializing Google Cloud Storage client")
-    storage_client = storage.Client(project_id)
+    storage_client = storage.Client()
     bucket = storage_client.get_bucket(raw_zone_bucket_name)
     blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv') and '/' not in blob.name[len(raw_zone_folder_path):].strip('/')]
 
