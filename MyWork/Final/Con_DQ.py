@@ -11,13 +11,13 @@ REPORT_PROCESSED_FILENAME = "consolidated_report_processed.csv"
 REPORT_ERROR_FILENAME = "consolidated_report_error.csv"
 
 class VolumeCheckAndClassify(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, processed_folder, error_folder):
+    def __init__(self, raw_zone_bucket_name, classified_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
-        self.processed_folder = processed_folder
-        self.error_folder = error_folder
+        self.processed_folder = f"{classified_folder_path}/processed"
+        self.error_folder = f"{classified_folder_path}/error"
 
     def setup(self):
-        self.storage_client = storage.Client()
+        self.storage_client = storage.Client(project_id)
 
     def process(self, file_path):
         print(f"Processing file: {file_path}")
@@ -57,7 +57,7 @@ class CreateOrAppendReport(beam.DoFn):
         self.report_filename = report_filename
 
     def setup(self):
-        self.storage_client = storage.Client()
+        self.storage_client = storage.Client(project_id)
 
     def process(self, report_data_list):
         print(f"Creating or appending report: {self.report_filename}")
@@ -87,14 +87,14 @@ class CreateOrAppendReport(beam.DoFn):
         print(f"Report {self.report_filename} updated successfully")
 
 class MoveProcessedFiles(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, processed_folder, certify_zone_bucket_name, certify_folder_path):
+    def __init__(self, raw_zone_bucket_name, classified_folder_path, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
-        self.processed_folder = processed_folder
+        self.processed_folder = f"{classified_folder_path}/processed"
         self.certify_zone_bucket_name = certify_zone_bucket_name
         self.certify_folder_path = certify_folder_path
 
     def setup(self):
-        self.storage_client = storage.Client()
+        self.storage_client = storage.Client(project_id)
 
     def process(self, file_path):
         raw_bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
@@ -109,16 +109,16 @@ class MoveProcessedFiles(beam.DoFn):
             print(f"Moved processed file {file_path} to certify zone bucket")
             yield file_path
 
-def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify_bucket_name, certify_folder_path, report_folder_path):
+def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_bucket_name, certify_folder_path, report_folder_path):
     # Configure pipeline options for DataflowRunner
     options = PipelineOptions(
         project=project_id,
-        runner="DataflowRunner",
+        runner="DirectRunner",
         region='europe-west2',
         staging_location=f'gs://{raw_zone_bucket_name}/staging',
         service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
         dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
+        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kcl-01-bld-01',
         num_workers=1,
         max_num_workers=4,
         use_public_ips=False,
@@ -127,7 +127,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     )
 
     print("Initializing Google Cloud Storage client")
-    storage_client = storage.Client()
+    storage_client = storage.Client(project_id)
     bucket = storage_client.get_bucket(raw_zone_bucket_name)
     blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv') and '/' not in blob.name[len(raw_zone_folder_path):].strip('/')]
 
@@ -144,8 +144,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
         | 'Volume Check and Classify' >> beam.ParDo(
             VolumeCheckAndClassify(
                 raw_zone_bucket_name=raw_zone_bucket_name,
-                processed_folder=f'{raw_zone_folder_path}/processed',
-                error_folder=f'{raw_zone_folder_path}/error'
+                classified_folder_path=classified_folder_path
             )
         ).with_outputs('processed', 'error', main='main')
     )
@@ -176,7 +175,7 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, certify
     files | 'Move Processed Files' >> beam.ParDo(
         MoveProcessedFiles(
             raw_zone_bucket_name=raw_zone_bucket_name,
-            processed_folder=f'{raw_zone_folder_path}/processed',
+            classified_folder_path=classified_folder_path,
             certify_zone_bucket_name=certify_bucket_name,
             certify_folder_path=certify_folder_path
         )
@@ -191,6 +190,7 @@ if __name__ == "__main__":
     project_id = 'your-gcp-project-id'
     raw_zone_bucket_name = 'your-raw-zone-bucket'
     raw_zone_folder_path = 'your-raw-folder-path'
+    classified_folder_path = 'your-classified-folder-path'  # New placeholder for classified files (processed, error)
     certify_bucket_name = 'your-certify-bucket'
     certify_folder_path = 'your-certify-folder-path/received'
     report_folder_path = 'your-report-folder-path'
@@ -200,6 +200,7 @@ if __name__ == "__main__":
         project_id=project_id,
         raw_zone_bucket_name=raw_zone_bucket_name,
         raw_zone_folder_path=raw_zone_folder_path,
+        classified_folder_path=classified_folder_path,
         certify_bucket_name=certify_bucket_name,
         certify_folder_path=certify_folder_path,
         report_folder_path=report_folder_path
