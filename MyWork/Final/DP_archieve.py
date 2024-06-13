@@ -1,6 +1,7 @@
 import apache_beam as beam
 from apache_beam.io.filesystems import FileSystems
-from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
+from apache_beam.options.pipeline_options import PipelineOptions
+from datetime import datetime
 
 class CopyFilesFn(beam.DoFn):
     def __init__(self, source_path, destination_path):
@@ -8,12 +9,17 @@ class CopyFilesFn(beam.DoFn):
         self.destination_path = destination_path
 
     def process(self, element):
+        # Get current month and year
+        folder_date = datetime.now().strftime('%m-%Y')
+        destination_folder_path = f'{self.destination_path}/{folder_date}'
+        
         match_results = FileSystems.match([self.source_path + '/*'])
         for match_result in match_results:
             for metadata in match_result.metadata_list:
                 source_file_path = metadata.path
-                destination_file_path = source_file_path.replace(self.source_path, self.destination_path)
+                destination_file_path = source_file_path.replace(self.source_path, destination_folder_path)
                 FileSystems.copy([source_file_path], [destination_file_path])
+                print(f'Copied {source_file_path} to {destination_file_path}')
                 yield f'Copied {source_file_path} to {destination_file_path}'
 
 def run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name):
