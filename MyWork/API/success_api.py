@@ -11,27 +11,24 @@ def download_and_upload_to_gcs():
         
         logging.info("Fetched the response.... merging all the chunks")
         
-        # Parse the XML response
+        # Parse the XML response with namespace
+        namespace = {'ns': 'https://soap.cap.co.uk/datadownload/'}
         root = ET.fromstring(response.content)
-        file_name = root.find('.//{https://soap.cap.co.uk/datadownload/}Name').text
+        
+        # Add <Success>1</Success> to the XML if needed (Example shown for placement)
+        success_element = ET.Element("Success")
+        success_element.text = "1"
+        root.append(success_element)
+        
+        file_name = root.find('.//ns:Name', namespace).text
         
         logging.info(f"For filename: {file_name}, chunks are being merged")
         
         # Extract and decode chunks
-        chunks = [chunk.text for chunk in root.findall('.//{https://soap.cap.co.uk/datadownload/}Chunk')]
+        chunks = [chunk.text for chunk in root.findall('.//ns:Chunk', namespace)]
         file_data = b"".join(base64.b64decode(chunk) for chunk in chunks)
         
         logging.info("Chunks merged. Uploading to GCS bucket")
-        
-        # Add success line after merging chunks
-        success_element = ET.Element("Success")
-        success_element.text = "1"
-        success_element.set("Xmlns", "https://soap.cap.co.uk/datadownload/")
-        root.append(success_element)
-        
-        # Convert the updated XML to string (if needed, otherwise this step can be omitted)
-        updated_xml = ET.tostring(root, encoding='unicode')
-        logging.info(f"Updated XML with success line: {updated_xml}")
         
         # Initialize Google Cloud Storage client
         client = storage.Client(project=project_id)
