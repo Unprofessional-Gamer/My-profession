@@ -11,21 +11,20 @@ def download_and_upload_to_gcs():
         
         logging.info("Fetched the response.... merging all the chunks")
         
-        # Parse the XML response with namespace
-        namespace = {'ns': 'https://soap.cap.co.uk/datadownload/'}
+        # Parse the XML response
         root = ET.fromstring(response.content)
         
-        # Add <Success>1</Success> to the XML if needed (Example shown for placement)
-        success_element = ET.Element("Success")
-        success_element.text = "1"
-        root.append(success_element)
+        # Check for the Success element
+        success_element = root.find('.//{https://soap.cap.co.uk/datadownload/}Success')
+        if success_element is None or success_element.text != '1':
+            raise Exception("Download was not successful")
         
-        file_name = root.find('.//ns:Name', namespace).text
+        file_name = root.find('.//{https://soap.cap.co.uk/datadownload/}Name').text
         
         logging.info(f"For filename: {file_name}, chunks are being merged")
         
         # Extract and decode chunks
-        chunks = [chunk.text for chunk in root.findall('.//ns:Chunk', namespace)]
+        chunks = [chunk.text for chunk in root.findall('.//{https://soap.cap.co.uk/datadownload/}Chunk')]
         file_data = b"".join(base64.b64decode(chunk) for chunk in chunks)
         
         logging.info("Chunks merged. Uploading to GCS bucket")
@@ -48,6 +47,7 @@ def download_and_upload_to_gcs():
         logging.error(f"An error occurred: {e}")
 
 if __name__ == "__main__":
+    
     project_id = "tnt-01-bld"
     folder_path = 'thParty/MFVS/GFV/'
 
