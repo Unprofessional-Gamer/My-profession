@@ -5,15 +5,11 @@ import csv
 from datetime import datetime
 import io
 
-# Constants
-DATE_FORMAT = "%d-%m-%y"
-REPORT_PROCESSED_FILENAME = "consolidated_report_processed.csv"
-REPORT_ERROR_FILENAME = "consolidated_report_error.csv"
-
 class VolumeCheckAndClassify(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, error_folder_path, certify_zone_bucket_name, certify_folder_path):
+    def __init__(self, raw_zone_bucket_name, error_folder_path, processed_folder_path, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
         self.error_folder = error_folder_path
+        self.processed_folder = processed_folder_path
         self.certify_zone_bucket_name = certify_zone_bucket_name
         self.certify_folder = certify_folder_path
 
@@ -31,65 +27,32 @@ class VolumeCheckAndClassify(beam.DoFn):
         # Count the number of records, ignoring the header row
         record_count = sum(1 for row in reader) - 1
         filename = file_path.split("/")[-1]
-        current_date = datetime.now().strftime(DATE_FORMAT)
 
         if record_count < 100:
             print(f"File {filename} has less than 100 records, moving to error folder")
             destination_blob_name = f"{self.error_folder}/{filename}"
-            report_data = [current_date, filename, record_count]
-            yield beam.pvalue.TaggedOutput('error', report_data)
+            destination_blob = bucket.blob(destination_blob_name)
+            destination_blob.upload_from_string(content)
         else:
-            print(f"File {filename} has 100 or more records, moving to processed folder in certify zone")
-            destination_blob_name = f"{self.certify_folder}/{filename}"
-            report_data = [current_date, filename, record_count]
-            yield beam.pvalue.TaggedOutput('processed', report_data)
+            print(f"File {filename} has 100 or more records, moving to processed and certify folder")
+            processed_blob_name = f"{self.processed_folder}/{filename}"
+            certify_blob_name = f"{self.certify_folder}/{filename}"
+
+            # Write to processed folder
+            processed_blob = bucket.blob(processed_blob_name)
+            processed_blob.upload_from_string(content)
+
+            # Write to certify folder in the certify zone bucket
+            certify_bucket = self.storage_client.bucket(self.certify_zone_bucket_name)
+            certify_blob = certify_bucket.blob(certify_blob_name)
+            certify_blob.upload_from_string(content)
         
-        # Move the file to the appropriate folder
-        destination_blob = self.storage_client.bucket(
-            self.certify_zone_bucket_name if record_count >= 100 else self.raw_zone_bucket_name
-        ).blob(destination_blob_name)
-        destination_blob.upload_from_string(content)
+        # Delete the original file
         blob.delete()
 
         yield file_path
 
-class CreateOrAppendReport(beam.DoFn):
-    def __init__(self, raw_zone_bucket_name, report_folder_path, report_filename):
-        self.raw_zone_bucket_name = raw_zone_bucket_name
-        self.report_folder_path = report_folder_path
-        self.report_filename = report_filename
-
-    def setup(self):
-        self.storage_client = storage.Client()
-
-    def process(self, report_data_list):
-        print(f"Creating or appending report: {self.report_filename}")
-        
-        bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
-        report_blob = bucket.blob(f"{self.report_folder_path}/{self.report_filename}")
-
-        # Download existing report content if available
-        existing_content = ""
-        if report_blob.exists():
-            existing_content = report_blob.download_as_string().decode("utf-8")
-        
-        # Create in-memory file object to store updated report
-        updated_content = io.StringIO()
-        writer = csv.writer(updated_content)
-
-        if existing_content:
-            writer.writerows(csv.reader(existing_content.splitlines()))
-        else:
-            # Add header if the report is being created for the first time
-            writer.writerow(["DD-MM-YY", "Filename", "Records"])
-        
-        writer.writerows(report_data_list)
-        
-        # Upload the updated report content
-        report_blob.upload_from_string(updated_content.getvalue())
-        print(f"Report {self.report_filename} updated successfully")
-
-def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_zone_bucket_name, certify_folder_path, report_folder_path):
+def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_zone_bucket_name, certify_folder_path):
     # Configure pipeline options for DataflowRunner
     options = PipelineOptions(
         project=project_id,
@@ -119,37 +82,13 @@ def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classif
     files = p | 'Create File List' >> beam.Create(blobs)
     
     # Apply the volume check and classification transformation
-    classified = (
-        files 
-        | 'Volume Check and Classify' >> beam.ParDo(
-            VolumeCheckAndClassify(
-                raw_zone_bucket_name=raw_zone_bucket_name,
-                error_folder_path=f"{classified_folder_path}/error",
-                certify_zone_bucket_name=certify_zone_bucket_name,
-                certify_folder_path=certify_folder_path
-            )
-        ).with_outputs('processed', 'error', main='main')
-    )
-
-    # Collect reports for processed and error files
-    processed_reports = classified.processed | 'Collect Processed Reports' >> beam.combiners.ToList()
-    error_reports = classified.error | 'Collect Error Reports' >> beam.combiners.ToList()
-
-    # Create or append to the consolidated report for processed files
-    processed_reports | 'Create Processed Report' >> beam.ParDo(
-        CreateOrAppendReport(
+    files | 'Volume Check and Classify' >> beam.ParDo(
+        VolumeCheckAndClassify(
             raw_zone_bucket_name=raw_zone_bucket_name,
-            report_folder_path=report_folder_path,
-            report_filename=REPORT_PROCESSED_FILENAME
-        )
-    )
-
-    # Create or append to the consolidated report for error files
-    error_reports | 'Create Error Report' >> beam.ParDo(
-        CreateOrAppendReport(
-            raw_zone_bucket_name=raw_zone_bucket_name,
-            report_folder_path=report_folder_path,
-            report_filename=REPORT_ERROR_FILENAME
+            error_folder_path=f"{classified_folder_path}/error",
+            processed_folder_path=f"{classified_folder_path}/processed",
+            certify_zone_bucket_name=certify_zone_bucket_name,
+            certify_folder_path=certify_folder_path
         )
     )
 
@@ -163,9 +102,8 @@ if __name__ == "__main__":
     raw_zone_bucket_name = 'your-raw-zone-bucket'
     raw_zone_folder_path = 'your-raw-folder-path'
     classified_folder_path = 'your-classified-folder-path'  # Placeholder for classified files (processed, error)
-    certify_zone_bucket_name = 'your-certify-zone-bucket'  # New placeholder for processed files directly
-    certify_folder_path = 'your-certify-folder-path'  # New placeholder for processed files directly
-    report_folder_path = 'your-report-folder-path'
+    certify_zone_bucket_name = 'your-certify-zone-bucket'  # Placeholder for processed files in certify zone
+    certify_folder_path = 'your-certify-folder-path'  # Placeholder for processed files in certify zone
 
     # Run the pipeline
     run_pipeline(
@@ -174,6 +112,5 @@ if __name__ == "__main__":
         raw_zone_folder_path=raw_zone_folder_path,
         classified_folder_path=classified_folder_path,
         certify_zone_bucket_name=certify_zone_bucket_name,
-        certify_folder_path=certify_folder_path,
-        report_folder_path=report_folder_path
+        certify_folder_path=certify_folder_path
     )
