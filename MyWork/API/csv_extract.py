@@ -6,17 +6,23 @@ import xml.etree.ElementTree as ET
 from google.cloud import storage
 import logging
 
-def download_and_extract_zip_from_gcs():
+class download_and_extract_zip_from_gcs():
+
+    def upload_blob_to_gcs(client, bucket_name, destination_blob_name, file_data, content_type):
+    # Upload file data to GCS with specified content type
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(destination_blob_name)
+        
+        blob.upload_from_string(file_data, content_type=content_type)
+        
+        logging.info(f"Uploaded '{destination_blob_name}' to GCS bucket '{bucket_name}' with content type '{content_type}'")
     try:
         # Initialize Google Cloud Storage client
         client = storage.Client()
         
         # Define GCS bucket and path of the ZIP file
         bucket_name = "your-bucket-name"
-        zip_file_path = "thp_arty/MFVS/20240501-BlackBookPlatinumPlus-CSV.zip"  # Specify the path to your ZIP file
-        filename = zip_file_path[:-9]
-        print(filename)
-        
+        zip_file_path = "thpParty/MFVS/20240501-BlackBookPlatinumPlus-CSV.zip"  # Specify the path to your ZIP file
         
         # Get the ZIP file from GCS
         bucket = client.bucket(bucket_name)
@@ -35,7 +41,7 @@ def download_and_extract_zip_from_gcs():
                 file_data = zip_ref.read(file_name)  # Read file data from the ZIP archive
                 
                 # Define destination path in GCS (specify folder structure)
-                destination_blob_name = f"thp_arty/MFVS/{file_name}"  # Adjust destination folder structure as needed
+                destination_blob_name = f"thParty/MFVS/{file_name}"  # Adjust destination folder structure as needed
                 
                 # Determine content type based on file extension
                 content_type = "text/csv" if file_name.lower().endswith(".csv") else "text/plain"
@@ -46,14 +52,7 @@ def download_and_extract_zip_from_gcs():
     except Exception as e:
         logging.error(f"An error occurred: {e}")
 
-def upload_blob_to_gcs(client, bucket_name, destination_blob_name, file_data, content_type):
-    # Upload file data to GCS with specified content type
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    
-    blob.upload_from_string(file_data, content_type=content_type)
-    
-    logging.info(f"Uploaded '{destination_blob_name}' to GCS bucket '{bucket_name}' with content type '{content_type}'")
+
 
 if __name__ == "__main__":
     # Configure logging
