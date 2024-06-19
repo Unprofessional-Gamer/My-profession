@@ -36,7 +36,6 @@ def download_and_upload_to_gcs(product_ids):
                     continue
                 
                 file_name = file_name_element.text
-                
                 logging.info(f"For filename: {file_name}, chunks are being merged")
                 
                 # Extract and decode chunks
@@ -46,7 +45,14 @@ def download_and_upload_to_gcs(product_ids):
                     logging.error(f"Response content for Product ID {product_id}: {response.content.decode('utf-8')}")
                     continue
                 
-                file_data = b"".join(base64.b64decode(chunk.text) for chunk in chunks if chunk.text)
+                file_data = b""
+                for chunk in chunks:
+                    if chunk.text:
+                        decoded_chunk = base64.b64decode(chunk.text)
+                        file_data += decoded_chunk
+                        logging.info(f"Decoded chunk of size {len(decoded_chunk)}")
+                
+                logging.info(f"Total file size after merging chunks: {len(file_data)} bytes")
                 
                 logging.info("Chunks merged. Uploading to GCS bucket")
                 
