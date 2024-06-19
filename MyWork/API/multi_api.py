@@ -8,6 +8,7 @@ def download_and_upload_to_gcs(url):
     try:
         # Fetch the SOAP response
         response = requests.get(url)
+        response.raise_for_status()  # Ensure we handle HTTP errors
         
         logging.info("Fetched the response.... merging all the chunks")
         
@@ -15,17 +16,22 @@ def download_and_upload_to_gcs(url):
         namespace = {'ns':'https://soap.cap.co.uk/datadownload/datadownload/'}
         root = ET.fromstring(response.content)
     
-        success_element = ET.Element("Success")
-        success_element.text = '1'
-        root.append(success_element)
-
-        file_name = root.find('.//ns:name', namespace).text
+        # Find file name element
+        file_name_element = root.find('.//ns:name', namespace)
+        if file_name_element is None:
+            logging.error("File name element not found in the response")
+            return
+        file_name = file_name_element.text
         
         logging.info(f"For filename: {file_name}, chunks are being merged")
         
         # Extract and decode chunks
-        chunks = [chunk.text for chunk in root.findall('.//ns:Chunk', namespace)]
-        file_data = b"".join(base64.b64decode(chunk) for chunk in chunks)
+        chunks = root.findall('.//ns:Chunk', namespace)
+        if not chunks:
+            logging.error("No chunks found in the response")
+            return
+        
+        file_data = b"".join(base64.b64decode(chunk.text) for chunk in chunks if chunk.text)
         
         logging.info("Chunks merged. Uploading to GCS bucket")
         
@@ -43,6 +49,10 @@ def download_and_upload_to_gcs(url):
         
         logging.info(f"File '{file_name}' uploaded to GCS bucket '{bucket_name}' at path '{destination_blob_name}' with content type 'application/zip'")
     
+    except requests.exceptions.RequestException as e:
+        logging.error(f"HTTP request failed: {e}")
+    except ET.ParseError as e:
+        logging.error(f"Failed to parse XML response: {e}")
     except Exception as e:
         logging.error(f"An error occurred: {e}")
 
