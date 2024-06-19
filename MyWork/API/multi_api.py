@@ -9,18 +9,28 @@ def download_and_upload_to_gcs(api_url):
     try:
         # Fetch the SOAP response
         response = requests.get(api_url)
+        response.raise_for_status()  # Raise an exception for HTTP errors
         
         logging.info("Fetched the response.... merging all the chunks")
         
         # Parse the XML response
         root = ET.fromstring(response.content)
-        file_name = root.find('.//{https://soap.cap.co.uk/datadownload/}Name').text
+        file_name_element = root.find('.//{https://soap.cap.co.uk/datadownload/}Name')
+        if file_name_element is None or file_name_element.text is None:
+            logging.error(f"Missing <Name> element in the response for URL: {api_url}")
+            return
+        
+        file_name = file_name_element.text
         
         logging.info(f"For filename: {file_name}, chunks are being merged")
         
         # Extract and decode chunks
         chunks = [chunk.text for chunk in root.findall('.//{https://soap.cap.co.uk/datadownload/}Chunk')]
-        file_data = b"".join(base64.b64decode(chunk) for chunk in chunks)
+        if not chunks:
+            logging.error(f"Missing <Chunk> elements in the response for URL: {api_url}")
+            return
+        
+        file_data = b"".join(base64.b64decode(chunk) for chunk in chunks if chunk)
         
         logging.info("Chunks merged. Determining folder structure and uploading to GCS bucket")
         
@@ -42,7 +52,7 @@ def download_and_upload_to_gcs(api_url):
         logging.info(f"File '{file_name}' uploaded to GCS bucket '{bucket_name}' at path '{destination_blob_name}' with content type 'application/zip'")
     
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        logging.error(f"An error occurred for URL {api_url}: {e}")
 
 def determine_folder_path(file_name):
     # Extract date information from the filename
