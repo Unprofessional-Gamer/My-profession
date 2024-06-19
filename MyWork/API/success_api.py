@@ -50,7 +50,7 @@ def download_and_upload_to_gcs(product_ids):
                     if chunk.text:
                         decoded_chunk = base64.b64decode(chunk.text)
                         file_data += decoded_chunk
-                        logging.info(f"Decoded chunk of size {len(decoded_chunk)}")
+                        logging.info(f"Decoded chunk of size {len(decoded_chunk)} bytes")
                 
                 logging.info(f"Total file size after merging chunks: {len(file_data)} bytes")
                 
