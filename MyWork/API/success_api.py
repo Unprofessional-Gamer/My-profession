@@ -32,6 +32,7 @@ def download_and_upload_to_gcs(product_ids):
                 file_name_element = root.find('.//ns:name', namespace)
                 if file_name_element is None or file_name_element.text is None:
                     logging.error(f"Missing <name> element in the response for Product ID: {product_id}")
+                    logging.error(f"Response content for Product ID {product_id}: {response.content.decode('utf-8')}")
                     continue
                 
                 file_name = file_name_element.text
@@ -42,6 +43,7 @@ def download_and_upload_to_gcs(product_ids):
                 chunks = root.findall('.//ns:Chunk', namespace)
                 if not chunks:
                     logging.error(f"Missing <Chunk> elements in the response for Product ID: {product_id}")
+                    logging.error(f"Response content for Product ID {product_id}: {response.content.decode('utf-8')}")
                     continue
                 
                 file_data = b"".join(base64.b64decode(chunk.text) for chunk in chunks if chunk.text)
@@ -58,7 +60,7 @@ def download_and_upload_to_gcs(product_ids):
                 logging.info(f"File '{file_name}' uploaded to GCS bucket '{bucket_name}' at path '{destination_blob_name}' with content type 'application/zip'")
             except Exception as e:
                 logging.error(f"An error occurred for Product ID {product_id}: {e}")
-                logging.error(f"Response content: {response.content}")
+                logging.error(f"Response content for Product ID {product_id}: {response.content.decode('utf-8')}")
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
