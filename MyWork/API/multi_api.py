@@ -1,3 +1,9 @@
+import requests
+import base64
+import xml.etree.ElementTree as ET
+from google.cloud import storage
+import logging
+
 def download_and_upload_to_gcs(url):
     try:
         # Fetch the SOAP response
@@ -43,9 +49,10 @@ def download_and_upload_to_gcs(url):
 if __name__ == "__main__":
     project_id = "tnt-01-bld"
     folder_path = 'thParty/MFVS/GFV/'
+    
     urls = [
         "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1324",
-        # Add more URLs here
+        # Add more URLs here if needed
     ]
 
     # Configure logging
