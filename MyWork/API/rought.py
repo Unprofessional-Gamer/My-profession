@@ -4,42 +4,32 @@ import xml.etree.ElementTree as ET
 from google.cloud import storage
 import logging
 
-# List of product URLs
-product_urls = [
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1200",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1204",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1206",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1314",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1326"
-]
-
-def download_and_upload_to_gcs(url):
+def download_and_upload_to_gcs(url, project_id, folder_path, bucket_name):
     try:
-        # Fetch the SOAP response using the provided URL
+        # Fetch the SOAP response
         response = requests.get(url)
-        response.raise_for_status()  # Raise an error for bad status codes
         
         logging.info("Fetched the response.... merging all the chunks")
         
         # Parse the XML response
         namespace = {'ns': 'https://soap.cap.co.uk/datadownload/datadownload/'}
         root = ET.fromstring(response.content)
-    
-        success_element = ET.Element("Success")
-        success_element.text = '1'
-        root.append(success_element)
-
-        file_name_element = root.find('.//ns:name', namespace)
-        if file_name_element is None:
-            raise ValueError("The expected 'name' element was not found in the response.")
-
-        file_name = file_name_element.text
+        
+        # Check for the 'name' element
+        name_element = root.find('.//ns:name', namespace)
+        if name_element is None or name_element.text is None:
+            logging.error(f"The expected 'name' element was not found in the response. Full response: {response.content.decode()}")
+            return
+        
+        file_name = name_element.text
+        
         logging.info(f"For filename: {file_name}, chunks are being merged")
         
         # Extract and decode chunks
         chunks = [chunk.text for chunk in root.findall('.//ns:Chunk', namespace)]
         if not chunks:
-            raise ValueError("No 'Chunk' elements found in the response.")
+            logging.error(f"No 'Chunk' elements found in the response. Full response: {response.content.decode()}")
+            return
         
         file_data = b"".join(base64.b64decode(chunk) for chunk in chunks)
         
@@ -49,7 +39,6 @@ def download_and_upload_to_gcs(url):
         client = storage.Client(project=project_id)
         
         # Define your GCS bucket and destination file path
-        bucket_name = "your-bucket-name"
         destination_blob_name = folder_path + file_name
         
         # Upload the file data to GCS with specific content type for ZIP
@@ -61,17 +50,22 @@ def download_and_upload_to_gcs(url):
     
     except Exception as e:
         logging.error(f"An error occurred: {e}")
-        logging.debug(response.content)  # Log the response content for debugging
 
 if __name__ == "__main__":
-    
     project_id = "tnt-01-bld"
     folder_path = 'thParty/MFVS/GFV/'
+    bucket_name = "your-bucket-name"
+
+    # List of URLs to download
+    urls = [
+        "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1324",
+        "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=407&Password=lloyd407&ProductID=1325",
+        # Add more URLs as needed
+    ]
 
     # Configure logging
     logging.basicConfig(level=logging.INFO)
     
-    # Loop through each product URL and process sequentially
-    for product_url in product_urls:
-        logging.info(f"Processing URL: {product_url}")
-        download_and_upload_to_gcs(product_url)
+    for url in urls:
+        logging.info(f"Processing URL: {url}")
+        download_and_upload_to_gcs(url, project_id, folder_path, bucket_name)
