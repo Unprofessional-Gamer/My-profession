@@ -1,5 +1,5 @@
 from google.cloud import storage
-import zipfile
+import py7zr
 import io
 
 def unzip_large_file_in_gcs(raw_zone_bucket_name, raw_zone_folder_path, destination_bucket_name, destination_folder_path, zip_file_name):
@@ -15,24 +15,20 @@ def unzip_large_file_in_gcs(raw_zone_bucket_name, raw_zone_folder_path, destinat
     zip_blob.download_to_file(zip_buffer)
     zip_buffer.seek(0)
 
-    # Open the zip file
-    with zipfile.ZipFile(zip_buffer, 'r') as zip_ref:
-        # List all files in the zip file
-        zip_file_list = zip_ref.namelist()
+    # Open the zip file using py7zr
+    with py7zr.SevenZipFile(zip_buffer, 'r') as archive:
+        # Extract all files in the zip file to a dictionary
+        extracted_files = archive.readall()
 
         # Reference the destination bucket
         destination_bucket = storage_client.bucket(destination_bucket_name)
 
-        for file_name in zip_file_list:
-            # Extract each file to an in-memory buffer
-            extracted_file_data = zip_ref.read(file_name)
-            extracted_file_buffer = io.BytesIO(extracted_file_data)
-
+        for file_name, file_data in extracted_files.items():
             # Create a new blob in the destination bucket
             destination_blob = destination_bucket.blob(f"{destination_folder_path}/{file_name}")
 
             # Upload the extracted file to the destination bucket
-            destination_blob.upload_from_file(extracted_file_buffer, rewind=True)
+            destination_blob.upload_from_file(io.BytesIO(file_data.read()), rewind=True)
             print(f"Uploaded {file_name} to {destination_folder_path}/{file_name}")
 
 if __name__ == "__main__":
