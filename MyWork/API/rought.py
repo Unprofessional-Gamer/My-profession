@@ -18,7 +18,8 @@ def download_and_upload_to_gcs(url, project_id, folder_path, bucket_name):
         # Check for the 'name' element
         name_element = root.find('.//ns:name', namespace)
         if name_element is None or name_element.text is None:
-            raise ValueError("The expected 'name' element was not found in the response.")
+            logging.error(f"The expected 'name' element was not found in the response. Full response: {response.content.decode()}")
+            return
         
         file_name = name_element.text
         
@@ -27,7 +28,8 @@ def download_and_upload_to_gcs(url, project_id, folder_path, bucket_name):
         # Extract and decode chunks
         chunks = [chunk.text for chunk in root.findall('.//ns:Chunk', namespace)]
         if not chunks:
-            raise ValueError("No 'Chunk' elements found in the response.")
+            logging.error(f"No 'Chunk' elements found in the response. Full response: {response.content.decode()}")
+            return
         
         file_data = b"".join(base64.b64decode(chunk) for chunk in chunks)
         
