@@ -1,11 +1,7 @@
 from google.cloud import storage
-import zipfile
-import zstandard as zstd
+import patoolib
 import io
-import lzma
-
-#pip install google-cloud-storage zstandard lzma
-
+import os
 
 def unzip_large_file_in_gcs(raw_zone_bucket_name, raw_zone_folder_path, destination_bucket_name, destination_folder_path, zip_file_name):
     # Initialize the Google Cloud Storage client
@@ -15,46 +11,40 @@ def unzip_large_file_in_gcs(raw_zone_bucket_name, raw_zone_folder_path, destinat
     raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
     zip_blob = raw_zone_bucket.blob(f"{raw_zone_folder_path}/{zip_file_name}")
 
-    # Create an in-memory buffer to hold the zip file content
-    zip_buffer = io.BytesIO()
-    zip_blob.download_to_file(zip_buffer)
-    zip_buffer.seek(0)
+    # Create a temporary directory to store the zip file and extract it
+    temp_dir = "/tmp/extracted_files"
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
 
-    # Open the zip file
-    with zipfile.ZipFile(zip_buffer, 'r') as zip_ref:
-        # List all files in the zip file
-        zip_file_list = zip_ref.namelist()
+    # Download the zip file content into a local file
+    zip_file_path = os.path.join(temp_dir, zip_file_name)
+    zip_blob.download_to_filename(zip_file_path)
 
-        # Reference the destination bucket
-        destination_bucket = storage_client.bucket(destination_bucket_name)
+    # Extract the zip file using patoolib
+    patoolib.extract_archive(zip_file_path, outdir=temp_dir)
 
-        for file_name in zip_file_list:
-            with zip_ref.open(file_name) as extracted_file:
-                # Check the compression method and handle accordingly
-                compression_method = zip_ref.getinfo(file_name).compress_type
+    # Reference the destination bucket
+    destination_bucket = storage_client.bucket(destination_bucket_name)
 
-                if compression_method == zipfile.ZIP_STORED:
-                    file_data = extracted_file.read()
-                elif compression_method == zipfile.ZIP_DEFLATED:
-                    file_data = extracted_file.read()
-                elif compression_method == zipfile.ZIP_BZIP2:
-                    with io.BytesIO(extracted_file.read()) as bzip_file:
-                        file_data = bzip_file.read()
-                elif compression_method == zipfile.ZIP_LZMA:
-                    with lzma.LZMAFile(extracted_file) as lzma_file:
-                        file_data = lzma_file.read()
-                elif compression_method == 93:  # Zstandard, not officially in zipfile module
-                    dctx = zstd.ZstdDecompressor()
-                    file_data = dctx.decompress(extracted_file.read())
-                else:
-                    raise NotImplementedError(f"Compression method {compression_method} is not supported")
+    # Upload extracted files to the destination bucket
+    for root, dirs, files in os.walk(temp_dir):
+        for file_name in files:
+            file_path = os.path.join(root, file_name)
+            relative_path = os.path.relpath(file_path, temp_dir)
+            destination_blob = destination_bucket.blob(f"{destination_folder_path}/{relative_path}")
 
-                # Create a new blob in the destination bucket
-                destination_blob = destination_bucket.blob(f"{destination_folder_path}/{file_name}")
+            with open(file_path, 'rb') as file_data:
+                destination_blob.upload_from_file(file_data, rewind=True)
+            print(f"Uploaded {relative_path} to {destination_folder_path}/{relative_path}")
 
-                # Upload the extracted file to the destination bucket
-                destination_blob.upload_from_file(io.BytesIO(file_data), rewind=True)
-                print(f"Uploaded {file_name} to {destination_folder_path}/{file_name}")
+    # Clean up temporary files
+    os.remove(zip_file_path)
+    for root, dirs, files in os.walk(temp_dir):
+        for file_name in files:
+            os.remove(os.path.join(root, file_name))
+        for dir_name in dirs:
+            os.rmdir(os.path.join(root, dir_name))
+    os.rmdir(temp_dir)
 
 if __name__ == "__main__":
     raw_zone_bucket_name = 'your-raw-zone-bucket-name'
