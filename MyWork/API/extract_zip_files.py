@@ -1,69 +1,52 @@
-import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions
-from apache_beam.io.filesystems import FileSystems
 import zipfile
-import io
 import os
+import io
+from google.cloud import storage
 
-def extract_and_upload_zip_file(file_path, destination_folder, bucket_name):
-    """Extract and upload CSV files from a zip file into a folder named after the zip file."""
-    print(f'Starting processing of file: {file_path}')
-    zip_data = FileSystems.open(file_path).read()
-    with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
-        # Extract folder name from file_path (e.g., 'gs://bucket/path/to/file.zip' -> 'file')
-        folder_name = os.path.splitext(os.path.basename(file_path))[0]
-        for file_info in z.infolist():
-            if file_info.filename.endswith('.csv'):
-                print(f'Extracting file: {file_info.filename}')
-                with z.open(file_info) as extracted_file:
-                    # Destination path: gs://bucket/destination_folder/file/filename.csv
-                    destination_path = f'gs://{bucket_name}/{destination_folder}/{folder_name}/{file_info.filename}'
-                    with FileSystems.create(destination_path) as dest:
-                        dest.write(extracted_file.read())
-                print(f'Uploaded file: {file_info.filename} to {destination_path}')
-    # Delete the processed zip file from the bucket
-    FileSystems.delete([file_path])
-    print(f'Deleted file: {file_path} from source bucket')
+def list_files_in_bucket(bucket_name, prefix):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blobs = bucket.list_blobs(prefix=prefix)
+    return [blob.name for blob in blobs]
 
-def run_beam_pipeline(project_id, bucket_name, source_folder_1, source_folder_2, destination_folder):
-    pipeline_options = PipelineOptions(
-        project=project_id,
-        runner="DataflowRunner",
-        job_name="extract-zip-files",
-        temp_location=f'gs://{bucket_name}/temp',
-        region='europe-west2',
-        staging_location=f'gs://{bucket_name}/staging',
-        service_account_email='your-service-account-email',
-        dataflow_kms_key='your-kms-key',
-        subnetwork='your-subnetwork',
-        num_workers=1,
-        max_num_workers=4,
-        use_public_ips=False,
-        autoscaling_algorithm='THROUGHPUT_BASED',
-        save_main_session=True
-    )
+def download_blob_to_memory(bucket_name, source_blob_name):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(source_blob_name)
+    data = blob.download_as_bytes()
+    return data
 
-    with beam.Pipeline(options=pipeline_options) as pipeline:
-        # List all zip files in both source folders
-        files_1 = beam.io.match.MatchFiles(f'gs://{bucket_name}/{source_folder_1}/*.zip').expand()
-        files_2 = beam.io.match.MatchFiles(f'gs://{bucket_name}/{source_folder_2}/*.zip').expand()
+def upload_blob_from_memory(bucket_name, destination_blob_name, data):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_string(data)
+    print(f"Uploaded to {destination_blob_name}")
 
-        files = (
-            pipeline
-            | "Create file list" >> beam.Create([file.path for file in files_1 + files_2])
-        )
+def process_zip_files(raw_zone_bucket, raw_zone_folder, destination_bucket, destination_folder):
+    # List all zip files in the raw zone folder
+    zip_files = list_files_in_bucket(raw_zone_bucket, raw_zone_folder)
 
-        extracted_files = files | "Extract and upload files" >> beam.Map(
-            extract_and_upload_zip_file, destination_folder, bucket_name
-        )
+    for zip_file in zip_files:
+        if zip_file.endswith('.zip'):
+            # Create folder name without extension
+            folder_name = os.path.splitext(zip_file.split('/')[-1])[0]
+            
+            # Download the zip file to memory
+            zip_data = download_blob_to_memory(raw_zone_bucket, zip_file)
+            
+            # Unzip the file in memory
+            with zipfile.ZipFile(io.BytesIO(zip_data), 'r') as zip_ref:
+                for file_name in zip_ref.namelist():
+                    file_data = zip_ref.read(file_name)
+                    destination_blob_name = f"{destination_folder}/{folder_name}/{file_name}"
+                    upload_blob_from_memory(destination_bucket, destination_blob_name, file_data)
 
-    print("Beam pipeline execution completed.")
+# Define your variables
+raw_zone_bucket = 'bwiu8-raw_zone_277'
+raw_zone_folder = 'thParty/MFVS/GFV/ZIP'
+destination_bucket = 'destination_bucket'
+destination_folder = 'thParty/MFVS/EXtract'
 
-if __name__ == '__main__':
-    PROJECT_ID = 'my-project-id'
-    BUCKET_NAME = 'my-bucket-name'
-    SOURCE_FOLDER_1 = 'source-folder-1'
-    SOURCE_FOLDER_2 = 'source-folder-2'
-    DESTINATION_FOLDER = 'destination-folder'
-
-    run_beam_pipeline(PROJECT_ID, BUCKET_NAME, SOURCE_FOLDER_1, SOURCE_FOLDER_2, DESTINATION_FOLDER)
+# Process the zip files
+process_zip_files(raw_zone_bucket, raw_zone_folder, destination_bucket, destination_folder)
