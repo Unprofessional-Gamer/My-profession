@@ -4,18 +4,9 @@ import xml.etree.ElementTree as ET
 from google.cloud import storage
 import logging
 
-# List of product URLs
-product_urls = [
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1200",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1204",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1206",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1314",
-    "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1326"
-]
-
-def download_and_upload_to_gcs(url):
+def download_and_upload_to_gcs(url, project_id, folder_path, bucket_name):
     try:
-        # Fetch the SOAP response using the provided URL
+        # Fetch the SOAP response
         response = requests.get(url)
         
         logging.info("Fetched the response.... merging all the chunks")
@@ -42,7 +33,6 @@ def download_and_upload_to_gcs(url):
         client = storage.Client(project=project_id)
         
         # Define your GCS bucket and destination file path
-        bucket_name = "your-bucket-name"
         destination_blob_name = folder_path + file_name
         
         # Upload the file data to GCS with specific content type for ZIP
@@ -56,14 +46,20 @@ def download_and_upload_to_gcs(url):
         logging.error(f"An error occurred: {e}")
 
 if __name__ == "__main__":
-    
     project_id = "tnt-01-bld"
     folder_path = 'thParty/MFVS/GFV/'
+    bucket_name = "your-bucket-name"
+
+    # List of URLs to download
+    urls = [
+        "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1324",
+        "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=407&Password=lloyd407&ProductID=1325",
+        # Add more URLs as needed
+    ]
 
     # Configure logging
     logging.basicConfig(level=logging.INFO)
     
-    # Loop through each product URL and process
-    for product_url in product_urls:
-        logging.info(f"Processing URL: {product_url}")
-        download_and_upload_to_gcs(product_url)
+    for url in urls:
+        logging.info(f"Processing URL: {url}")
+        download_and_upload_to_gcs(url, project_id, folder_path, bucket_name)
