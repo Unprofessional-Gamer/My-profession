@@ -1,0 +1,131 @@
+Node.js Script Explanation
+Overview
+This document provides a detailed explanation of the Node.js script that:
+
+Fetches a SOAP response containing a data package.
+Parses the XML response to extract and decode the data chunks.
+Merges the data chunks into a single file.
+Uploads the merged file to a specified Google Cloud Storage (GCS) bucket.
+Code Explanation
+Setup and Initialization
+Lines 1-6: Import Required Modules
+
+javascript:
+
+Copy code
+const https = require('https');
+const xml2js = require('xml2js');
+const { Storage } = require('@google-cloud/storage');
+const base64 = require('base-64');
+const { Buffer } = require('buffer');
+const { createLogger, transports, format } = require('winston');
+https: For making HTTPS requests.
+xml2js: For parsing XML data.
+@google-cloud/storage: For accessing Google Cloud Storage.
+base64: For base64 encoding and decoding.
+buffer: For handling binary data.
+winston: For logging.
+Lines 8-19: Configure Logger
+
+javascript:
+
+Copy code
+const logger = createLogger({
+  level: 'info',
+  format: format.combine(
+    format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    format.errors({ stack: true }),
+    format.splat(),
+    format.json()
+  ),
+  transports: [new transports.Console()]
+});
+Configures the winston logger to output logs to the console with timestamps and error stack traces.
+Fetching SOAP Response
+Lines 21-22: Define URL and Fetch Response
+
+javascript
+Copy code
+const url = "https://soap.cap.co.uk/datadownload/datadownload_webservice.asmx/Stream_LatestPackage?SubscriberID=406&Password=lloyd406&ProductID=1324";
+const response = await fetch(url);
+Defines the URL for the SOAP web service.
+Uses fetch to get the response from the URL.
+Line 23: Convert Response to Text
+
+javascript
+Copy code
+const responseText = await response.text();
+Converts the response to a text format for parsing.
+Parsing XML Response
+Lines 25-29: Parse XML Response
+
+javascript
+Copy code
+const parser = new xml2js.Parser({ explicitArray: false });
+const result = await parser.parseStringPromise(responseText);
+const root = result['soap:Envelope']['soap:Body']['Stream_LatestPackageResponse']['Stream_LatestPackageResult'];
+if (!root) throw new Error("Invalid XML response structure");
+Initializes xml2js parser.
+Parses the XML response into a JavaScript object.
+Navigates through the object to extract the root element.
+Throws an error if the response structure is invalid.
+Line 31: Extract Filename
+
+javascript
+Copy code
+const fileName = root['name'];
+Extracts the filename from the parsed XML response.
+Decoding and Merging Chunks
+Lines 33-35: Decode and Merge Chunks
+
+javascript
+Copy code
+const chunks = root['Chunk'];
+const fileData = Buffer.concat(chunks.map(chunk => Buffer.from(base64.decode(chunk), 'binary')));
+Extracts the data chunks.
+Decodes each chunk from base64 and concatenates them into a single Buffer.
+Uploading to GCS
+Lines 37-39: Initialize Google Cloud Storage Client
+
+javascript
+Copy code
+const storage = new Storage({ projectId: 'tnt-01-bld' });
+const bucketName = 'your-bucket-name';
+const destinationBlobName = `thParty/MFVS/GFV/${fileName}`;
+Initializes the GCS client with the project ID.
+Defines the bucket name and destination path for the file.
+Lines 40-43: Upload File to GCS
+
+javascript
+Copy code
+const bucket = storage.bucket(bucketName);
+const blob = bucket.file(destinationBlobName);
+await blob.save(fileData, { contentType: 'application/zip' });
+Selects the GCS bucket.
+Creates a reference to the destination file.
+Uploads the file data with the content type set to application/zip.
+Error Handling
+Lines 45-47: Error Handling
+
+javascript
+Copy code
+logger.error(`An error occurred: ${error.message}`);
+}
+Logs any errors that occur during the process.
+Entry Point
+Lines 49-50: Run Function
+
+javascript
+Copy code
+downloadAndUploadToGCS();
+Calls the downloadAndUploadToGCS function to execute the script.
+Running the Script
+To run the script, execute the following command:
+
+bash
+Copy code
+node script.js
+Replace script.js with the filename of your Node.js script.
+
+Conclusion:
+This Node.js script replicates the functionality of the provided Python code. It fetches a data package from a SOAP web service, merges the data chunks, and uploads the final file to Google Cloud Storage. The detailed logging provides insight into each step of the process and helps in debugging any issues that might arise.
