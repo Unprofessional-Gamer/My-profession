@@ -1,88 +1,59 @@
+import re
+import pandas as pd
 from google.cloud import storage
-import os
-import time
-from google.api_core.exceptions import TooManyRequests
-from openpyxl import Workbook
 from io import BytesIO
 
-# Initialize the GCS client
+# Replace with your credentials and bucket information
+bucket_name = 'your-bucket-name'
+raw_folder_path = 'path/to/your/raw/folder'
+excel_output_path = 'path/to/your/output/excel.xlsx'
+
+# Connect to Google Cloud Storage
 client = storage.Client()
+bucket = client.bucket(bucket_name)
 
-def list_blobs_with_prefix(bucket_name, prefix):
-    """Lists all the blobs in the bucket that begin with the prefix."""
-    bucket = client.bucket(bucket_name)
+# Regular expression to match folder names like YYYYMMDD-foldername-csv/
+folder_regex = re.compile(r'^\d{8}-([^/]+)-csv/$')
+
+# Function to list folders matching the pattern
+def list_folders(bucket, prefix):
+    folders = []
     blobs = bucket.list_blobs(prefix=prefix)
-    return blobs
-
-def upload_excel_to_gcs(bucket_name, file_path, workbook):
-    """Uploads an Excel workbook to GCS."""
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(file_path)
-    
-    # Save the workbook to a bytes buffer
-    excel_buffer = BytesIO()
-    workbook.save(excel_buffer)
-    excel_buffer.seek(0)
-    
-    blob.upload_from_file(excel_buffer, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-def process_schema_files(raw_zone_bucket, raw_zone_folder_path, raw_zone_file_path_base):
-    blobs = list_blobs_with_prefix(raw_zone_bucket, raw_zone_folder_path)
-    file_counter = 0
-    schema_file_counter = 0
-    
-    # Create a new workbook
-    workbook = Workbook()
-    workbook.remove(workbook.active)  # Remove the default sheet created by openpyxl
-
-    current_folder_name = None
-    worksheet = None
-
     for blob in blobs:
-        if blob.name.endswith('.schema.csv'):
-            # Extract the folder name and prefix
-            folder_name = os.path.dirname(blob.name).split('/')[-1].split('-')[1]
-            prefix = os.path.basename(blob.name).split('.')[0]
-            
-            # Create a new sheet for each folder
-            if folder_name != current_folder_name:
-                current_folder_name = folder_name
-                sheet_title = current_folder_name[:31]  # Limit sheet name to 31 characters
-                worksheet = workbook.create_sheet(title=sheet_title)
-                worksheet.append([f"{folder_name},{prefix}"])
-                schema_file_counter = 0
+        if blob.name.endswith('/'):
+            match = folder_regex.match(blob.name)
+            if match:
+                folders.append(match.group(1))
+    return folders
 
-            # Download the content of the schema file
-            schema_data = blob.download_as_text()
+# Function to process schema files and write to Excel
+def process_schema_files(bucket, folders, output_path):
+    excel_writer = pd.ExcelWriter(output_path, engine='xlsxwriter')
+    
+    for folder in folders:
+        folder_prefix = f"{folder}-csv/"
+        folder_blobs = bucket.list_blobs(prefix=folder_prefix)
+        
+        for blob in folder_blobs:
+            if blob.name.endswith('.schema.csv'):
+                # Read schema file
+                content = blob.download_as_string()
+                df = pd.read_csv(BytesIO(content))
+                
+                # Prepare data for Excel
+                df['foldername'] = folder
+                df['filename prefix'] = blob.name.split('/')[-1].split('.')[0]
+                
+                # Write to Excel sheet
+                sheet_name = f"{folder}_{blob.name.split('/')[-1].split('.')[0]}"
+                df.to_excel(excel_writer, sheet_name=sheet_name, index=False)
+    
+    excel_writer.save()
 
-            # Split the schema data into lines
-            lines = schema_data.strip().split('\n')
-
-            # Write data to the current sheet
-            for line in lines:
-                worksheet.append([line])
-            worksheet.append([])  # Adding a new line for separation
-
-            schema_file_counter += 1
-
-            # If we've processed 12 schema files, create a new sheet
-            if schema_file_counter == 12:
-                file_counter += 1
-                raw_zone_file_path = f"{raw_zone_file_path_base}_part{file_counter}.xlsx"
-                upload_excel_to_gcs(raw_zone_bucket, raw_zone_file_path, workbook)
-                workbook = Workbook()  # Reset workbook
-                workbook.remove(workbook.active)  # Remove the default sheet created by openpyxl
-
-    # Upload any remaining data in the workbook
-    if schema_file_counter > 0:
-        file_counter += 1
-        raw_zone_file_path = f"{raw_zone_file_path_base}_part{file_counter}.xlsx"
-        upload_excel_to_gcs(raw_zone_bucket, raw_zone_file_path, workbook)
-
-# Configuration
-raw_zone_bucket = 'your-raw-zone-bucket'
-raw_zone_folder_path = 'your/raw/zone/folder/path'
-raw_zone_file_path_base = 'your/raw/zone/file/path/target'
-
-# Execute the processing function
-process_schema_files(raw_zone_bucket, raw_zone_folder_path, raw_zone_file_path_base)
+# Main script
+if __name__ == "__main__":
+    # List folders matching the pattern
+    folders = list_folders(bucket, raw_folder_path)
+    
+    # Process schema files and write to Excel
+    process_schema_files(bucket, folders, excel_output_path)
