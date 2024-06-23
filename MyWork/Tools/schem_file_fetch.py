@@ -1,75 +1,57 @@
-from google.cloud import storage
-import csv
-import os
+import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions
 
-# Initialize GCS client
-client = storage.Client()
+def process_schema_files(element):
+    bucket_name = element['bucket']
+    blob_name = element['name']
+    folder_name = blob_name.split('/')[0].split('-')[1]
+    file_name_prefix = os.path.basename(blob_name).replace('.schema.csv', '')
 
-# Configuration
-raw_bucket_name = 'your-raw-bucket'
-raw_folder_path = 'your-raw-folder-path'
-output_dir_path = 'output_files'
-
-# Ensure the output directory exists
-os.makedirs(output_dir_path, exist_ok=True)
-
-def process_schema_files(bucket_name, folder_path, output_dir_path):
+    client = storage.Client()
     bucket = client.bucket(bucket_name)
-    blobs = bucket.list_blobs(prefix=folder_path)
-    
-    schema_files = [blob for blob in blobs if blob.name.endswith('.schema.csv')]
+    blob = bucket.blob(blob_name)
+    content = blob.download_as_text()
+    lines = content.strip().split('\n')
 
-    output_file_count = 1
-    file_count = 0
-    output_file_path = os.path.join(output_dir_path, f'output_{output_file_count}.csv')
-    
-    # Open the initial output CSV file for writing
-    output_file = open(output_file_path, mode='w', newline='')
-    csv_writer = csv.writer(output_file)
+    output_rows = []
+    for line in lines:
+        output_rows.append({'folder_name': folder_name, 'file_name_prefix': file_name_prefix, 'schema_data': line})
 
-    for blob in schema_files:
-        if file_count == 5:
-            output_file.close()
-            print(f"Output written to {output_file_path}")
-            output_file_count += 1
-            file_count = 0
-            output_file_path = os.path.join(output_dir_path, f'output_{output_file_count}.csv')
-            output_file = open(output_file_path, mode='w', newline='')
-            csv_writer = csv.writer(output_file)
-        
-        # Extract folder name from the blob name
-        try:
-            folder_name = blob.name.split('/')[-2].split('-')[1]
-            file_name_prefix = os.path.basename(blob.name).replace('.schema.csv', '')
-        except IndexError as e:
-            print(f"Error extracting folder name or file name prefix for blob: {blob.name}. Error: {e}")
-            continue
+    return output_rows
 
-        try:
-            # Read the schema file content
-            content = blob.download_as_text()
-            lines = content.strip().split('\n')
-        except Exception as e:
-            print(f"Error downloading or processing content from blob: {blob.name}. Error: {e}")
-            continue
+def run_pipeline(project_id, raw_zone_bucket, raw_zone_folder_path, output_file_path):
+    pipeline_options = PipelineOptions(
+        project=project_id,
+        runner="DataflowRunner",
+        region='europe-west2',
+        staging_location=f'gs://{raw_zone_bucket}/staging',
+        temp_location=f'gs://{raw_zone_bucket}/temp',
+        service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
+        dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
+        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
+        num_workers=1,
+        max_num_workers=4,
+        use_public_ips=False,
+        autoscaling_algorithm='THROUGHPUT_BASED',
+        save_main_session=True
+    )
 
-        for line in lines:
-            try:
-                # Write folder name and file name prefix
-                csv_writer.writerow([folder_name, file_name_prefix])
-                # Write schema data
-                csv_writer.writerow([line])
-            except Exception as e:
-                print(f"Error writing to CSV file: {output_file_path}. Error: {e}")
-                continue
+    with beam.Pipeline(options=pipeline_options) as pipeline:
+        (
+            pipeline
+            | 'List Files' >> beam.io.gcp.gcs.ListObjects(
+                bucket=raw_zone_bucket,
+                prefix=raw_zone_folder_path
+            )
+            | 'Process Schema Files' >> beam.ParDo(process_schema_files)
+            | 'Write Output' >> beam.io.WriteToText(output_file_path)
+        )
 
-        file_count += 1
+if __name__ == '__main__':
+    # Replace with your actual configurations
+    project_id = 'your-project-id'
+    raw_zone_bucket = 'your-raw-bucket'
+    raw_zone_folder_path = 'your-raw-folder-path'
+    output_file_path = 'gs://your-output-bucket/output.txt'  # Output file should be in a GCS path
 
-    output_file.close()
-    print(f"Output written to {output_file_path}")
-
-# Run the script
-try:
-    process_schema_files(raw_bucket_name, raw_folder_path, output_dir_path)
-except Exception as e:
-    print(f"An error occurred: {e}")
+    run_pipeline(project_id, raw_zone_bucket, raw_zone_folder_path, output_file_path)
