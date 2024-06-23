@@ -5,8 +5,9 @@ def process_schema_files(element):
     bucket_name = element['bucket']
     blob_name = element['name']
     folder_name = blob_name.split('/')[0].split('-')[1]
-    file_name_prefix = os.path.basename(blob_name).replace('.schema.csv', '')
+    file_name_prefix = blob_name.split('/')[-1].replace('.schema.csv', '')
 
+    from google.cloud import storage
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
@@ -39,11 +40,9 @@ def run_pipeline(project_id, raw_zone_bucket, raw_zone_folder_path, output_file_
     with beam.Pipeline(options=pipeline_options) as pipeline:
         (
             pipeline
-            | 'List Files' >> beam.io.gcp.gcs.ListObjects(
-                bucket=raw_zone_bucket,
-                prefix=raw_zone_folder_path
-            )
-            | 'Process Schema Files' >> beam.ParDo(process_schema_files)
+            | 'Read Files' >> beam.io.ReadFromText(f'gs://{raw_zone_bucket}/{raw_zone_folder_path}/*.schema.csv')
+            | 'Process Schema Files' >> beam.FlatMap(process_schema_files)
+            | 'Format Output' >> beam.Map(lambda x: f"{x['folder_name']},{x['file_name_prefix']},{x['schema_data']}")
             | 'Write Output' >> beam.io.WriteToText(output_file_path)
         )
 
@@ -51,7 +50,7 @@ if __name__ == '__main__':
     # Replace with your actual configurations
     project_id = 'your-project-id'
     raw_zone_bucket = 'your-raw-bucket'
-    raw_zone_folder_path = 'your-raw-folder-path'
+    raw_zone_folder_path = 'your-raw-folder-path/*'  # Use wildcard to read all schema files
     output_file_path = 'gs://your-output-bucket/output.txt'  # Output file should be in a GCS path
 
     run_pipeline(project_id, raw_zone_bucket, raw_zone_folder_path, output_file_path)
