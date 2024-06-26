@@ -1,18 +1,30 @@
 from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.operators.empty import EmptyOperator
-from airflow.providers.google.cloud.sensors.gcs import GCSObjectExistenceSensor
-from airflow.utils.dates import days_ago
+from airflow.operators.python_operator import PythonOperator
+from airflow.operators.dummy_operator import DummyOperator
 from datetime import datetime, timedelta
 import pendulum
+import calendar
 
-# Import your Python scripts
-from pricing_gfv.zipping_cap import zip_and_transfer_csv_files, run_pipeline
-from pricing_gfv.raw_backup import move_files_with_prefixes
-from pricing_gfv.unzip_gfv import unzipping
-from pricing_gfv.dataquality_check import dataquality_pipeline
-from pricing_gfv.cleaning_dq import cleaning_pipeline
-from pricing_gfv.DP_backup import dp_pipeline
+# Function to check if today is the last working day of the month
+def is_last_working_day_of_month(execution_date):
+    year = execution_date.year
+    month = execution_date.month
+    last_day_of_month = calendar.monthrange(year, month)[1]
+    last_day_date = datetime(year, month, last_day_of_month)
+
+    # Adjust if the last day is a weekend
+    while last_day_date.weekday() > 4:  # 0=Monday, 4=Friday
+        last_day_date -= timedelta(days=1)
+
+    return execution_date.date() == last_day_date.date()
+
+# Task to check if today is the last working day of the month
+def check_last_working_day(**context):
+    execution_date = context['execution_date']
+    if is_last_working_day_of_month(execution_date):
+        return 'start_tasks'
+    else:
+        return 'end'
 
 # Define constants and default arguments
 local_tz = pendulum.timezone('Europe/Lisbon')
@@ -22,106 +34,95 @@ today = datetime.now().strftime("%Y-%m-%d")
 
 default_args = {
     'owner': 'airflow',
-    'start_date': days_ago(1),
+    'start_date': datetime(2023, 1, 1),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 2,
-    'retry_delay': timedelta(minutes=2),
+    'retry_delay': timedelta(minutes=5),
 }
 
 # Define the DAG
 with DAG(
     dag_id='GfvZipping',
     default_args=default_args,
-    description='Zipping the CAP files and moving GFV files',
-    schedule_interval=None,  # No schedule, triggered by sensors
+    description="Zipping the CAP files and moving GFV files",
+    schedule_interval='0 14 * * *',  # Run every day at 2 PM
     max_active_runs=1,
     catchup=False,
+    tags=['example'],
 ) as dag:
 
-    start = EmptyOperator(
-        task_id='start',
+    check_date = PythonOperator(
+        task_id='check_date',
+        python_callable=check_last_working_day,
+        provide_context=True,
     )
 
-    # Sensor to check for file existence in the first folder
-    wait_for_files_folder1 = GCSObjectExistenceSensor(
-        task_id='wait_for_files_folder1',
-        bucket='tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181',
-        object='INTERNAL/MFVS/GFV/DAILY/RECEIVED/*',
-        google_cloud_conn_id='google_cloud_default',
-        timeout=600,
-        poke_interval=30,
-        mode='poke'
+    start_tasks = DummyOperator(
+        task_id='start_tasks'
     )
 
-    # Sensor to check for file existence in the second folder
-    wait_for_files_folder2 = GCSObjectExistenceSensor(
-        task_id='wait_for_files_folder2',
-        bucket='tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181',
-        object='INTERNAL/MFVS/CAP/DAILY/RECEIVED/*',
-        google_cloud_conn_id='google_cloud_default',
-        timeout=600,
-        poke_interval=30,
-        mode='poke'
+    end = DummyOperator(
+        task_id='end'
     )
 
-    # EmptyOperator to join the sensors with any_success trigger rule
-    join_sensors = EmptyOperator(
-        task_id='join_sensors',
-        trigger_rule='any_success',
-    )
-
-    unzipping_job = PythonOperator(
-        task_id="unzipping_job",
-        python_callable=unzipping,
-        op_args=[
-            'tnt01-odycda-bld-01-1681', 
-            'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181', 
-            'INTERNAL/MFVS/GFV/DAILY/RECEIVED', 
-            'INTERNAL/MFVS/CAP/DAILY/RECEIVED', 
-            'thParty/MFVS/GFV/Extract'
-        ],
-    )
-
-    dataquality_job = PythonOperator(
-        task_id="dataquality_job",
-        python_callable=dataquality_pipeline,
-        op_args=[
-            'tnt01-odycda-bld-01-1681', 
-            'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181', 
-            'thParty/MFVS/GFV/Extract', 
-            'thParty/MFVS/GFV/Received'
-        ],
-    )
-
-    moving_files_archive_job = PythonOperator(
-        task_id="moving_files_archive_job",
+    # Define your other tasks as usual
+    move_files_with_prefixes_task = PythonOperator(
+        task_id="move_files_with_prefixes_task",
         python_callable=move_files_with_prefixes,
         op_args=[
-            'tnt01-odycda-bld-01-1681', 
-            'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181', 
-            'thParty/MFVS/GFV/Daily/processed', 
-            'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181', 
-            'INTERNAL/MFVS/GFV/DAILY', 
-            'INTERNAL/MFVS/CAP/DAILY', 
-            ["CPRNEW", "CDENEW", "CPRVAL", "CDEVAL", "LDENEW", "LPRNEW", "LDEVAL", "LPRVAL"], 
-            ["CPRRVU", "CPRRVN"]
-        ],
+            'tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a',
+            'thparty/MFVS/GFV/SFGDrop',
+            'tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a',
+            'thparty/MFVS/GFV',
+            'thparty/MFVS/CAP',
+            [
+                "CPRNEW", "CDENEW", "CPRVAL", "CDEVAL",
+                "LDENEW", "LPRNEW", "LDEVAL", "LPRVAL"
+            ],
+            [
+                "CPRRVU", "CPRRVN"
+            ]
+        ]
     )
 
-    dp_cleaning_job = PythonOperator(
-        task_id="dp_cleaning_job",
-        python_callable=cleaning_pipeline,
+    beam_pipeline_task = PythonOperator(
+        task_id="beam_pipeline_task",
+        python_callable=run_beam_pipeline,
+        op_args=[
+            project_id,
+            'tnt01-odycda-bld-01-stb-eu-rawzone-d90dce7a',
+            'thparty/MFVS/GFV/SFGDrop',
+            'thparty/MFVS/GFV',
+            'thparty/MFVS/CAP',
+            ["CPRNEW", "CDENEW", "CPRVAL", "CDEVAL", "LDENEW", "LPRNEW", "LDEVAL", "LPRVAL"]
+        ]
+    )
+
+    zipfiles_job = PythonOperator(
+        task_id="zipfiles_job",
+        python_callable=zip_and_transfer_csv_files,
         op_args=[
             'tnt01-odycda-bld-01-1681', 
-            'tnt01-odycda-bld-01-stb-eu-certzone-3067f5f0', 
-            'thParty/MFVS/GFV/Received'
-        ],
+            'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181',
+            "thParty/MFVS/CAP/MONTHLY/2024-May/Archive",
+            "tnt01-odycda-bld-01-stb-eu-tdip-dp-consumer-78a45ff3",
+            'thParty/MFVS/GFV/update'
+        ]
     )
 
-    end = EmptyOperator(
-        task_id='end',
+    dp_movement_job = PythonOperator(
+        task_id="dp_movement_job",
+        python_callable=run_pipeline,
+        op_args=[
+            'tnt01-odycda-bld-01-1681', 
+            'tnt01-odycda-bld-01-stb-eu-rawzone-52fd7181',
+            "thParty/MFVS/CAP/MONTHLY/2024-May/Archive",
+            "tnt01-odycda-bld-01-stb-eu-tdip-dp-consumer-78a45ff3",
+            'thParty/MFVS/GFV/update'
+        ]
     )
 
     # Set task dependencies
-    start >> [wait_for_files_folder1, wait_for_files_folder2] >> join_sensors >> unzipping_job >> dataquality_job >> moving_files_archive_job >> dp_cleaning_job >> end
+    check_date >> [start_tasks, end]
+    start_tasks >> move_files_with_prefixes_task >> beam_pipeline_task >> zipfiles_job >> dp_movement_job >> end
