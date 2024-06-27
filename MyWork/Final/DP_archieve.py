@@ -22,7 +22,7 @@ class CopyFilesFn(beam.DoFn):
                 print(f'Copied {source_file_path} to {destination_file_path}')
                 yield f'Copied {source_file_path} to {destination_file_path}'
 
-def run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name):
+def archieve_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name):
     options = PipelineOptions(
         project=project_id,
         runner="DataflowRunner",
@@ -59,4 +59,4 @@ if __name__ == "__main__":
     consumer_folder_path = "thparty/MFVS/GFV"
     consumer_bucket_name = raw_zone_bucket_name  # Assuming the same bucket, if different, specify here
 
-    run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name)
+    archieve_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_bucket_name)
