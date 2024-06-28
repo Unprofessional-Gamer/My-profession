@@ -33,7 +33,7 @@ def zip_and_transfer_csv_files(project_id, raw_zone_bucket_name, raw_zone_folder
         return
     
     try:
-        # create memory zip
+        # Create memory zip
         zip_buffer = {}
         for blob in blob_list:
             if blob.name.endswith('.csv'):
@@ -48,17 +48,21 @@ def zip_and_transfer_csv_files(project_id, raw_zone_bucket_name, raw_zone_folder
                     with zipfile.ZipFile(zip_buffer[zip_name], 'a', zipfile.ZIP_DEFLATED) as zipf:
                         zipf.writestr(os.path.basename(blob.name), csv_data)
 
-        for zip_name, zip_buffer in zip_buffer.items():
-            zip_buffer.seek(0)
+        for zip_name, buffer in zip_buffer.items():
+            buffer.seek(0)
             
             # Upload to consumer_folder_path
             zip_blob = consumer_bucket.blob(zip_name + ".zip")
-            zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
+            zip_blob.upload_from_file(buffer, content_type='application/zip')
+            print(f"Uploaded to {zip_name + '.zip'}")
+            
+            buffer.seek(0)  # Reset the buffer to the beginning
             
             # Upload to consumer_archieve_path
             archive_zip_name = zip_name.replace(consumer_folder_path, consumer_archieve_path)
             archive_blob = consumer_bucket.blob(archive_zip_name + ".zip")
-            archive_blob.upload_from_file(zip_buffer, content_type='application/zip')
+            archive_blob.upload_from_file(buffer, content_type='application/zip')
+            print(f"Uploaded to {archive_zip_name + '.zip'}")
         
         print(f"Uploaded files to {consumer_bucket_name} successfully.")
 
@@ -137,6 +141,8 @@ def run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folde
             zip_blob = consumer_bucket.blob(zip_name + ".zip")
             zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
             
+            zip_buffer.seek(0)  # Reset the buffer to the beginning
+            
             # Upload to consumer_archieve_path
             archive_zip_name = zip_name.replace(consumer_folder_path, consumer_archieve_path)
             archive_blob = consumer_bucket.blob(archive_zip_name + ".zip")
@@ -170,7 +176,4 @@ if __name__ == "__main__":
 
     print("**********Files zipping started**********")
     zip_and_transfer_csv_files(project_id, raw_zone_bucket_name, sfg_base_path, consumer_bucket_name, consumer_folder_path, consumer_archieve_path)
-    print("**********Files zipping completed**********")
-    print("**********Files zipping started**********")
-    run_pipeline(project_id, raw_zone_bucket_name, sfg_base_path, consumer_folder_path, consumer_archieve_path, consumer_bucket_name)
-    print("**********Files zipping Completed**********")
+    print("**********Files zipping completed
