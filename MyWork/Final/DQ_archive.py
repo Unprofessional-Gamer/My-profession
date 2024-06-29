@@ -11,7 +11,7 @@ class MoveGCSFiles(beam.DoFn):
         self.current_month = datetime.now().strftime('%m-%Y')
     
     def start_bundle(self):
-        self.client = storage.Client()
+        self.client = storage.Client(project_id)
         self.bucket = self.client.bucket(self.bucket_name)
     
     def process(self, element):
@@ -28,7 +28,7 @@ class MoveGCSFiles(beam.DoFn):
         yield f"Moved to archive and deleted: {element}"
 
 def list_files(bucket_name, folder_path):
-    client = storage.Client()
+    client = storage.Client(project_id)
     bucket = client.bucket(bucket_name)
     blobs = bucket.list_blobs(prefix=folder_path)
     return [blob.name for blob in blobs]
