@@ -1,24 +1,18 @@
-import apache_beam as beam
-from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
 from google.cloud import storage
 import csv
-from datetime import datetime
-import io
 
-class VolumeCheckAndClassify(beam.DoFn):
+class VolumeCheckAndClassify:
     def __init__(self, raw_zone_bucket_name, error_folder_path, processed_folder_path, certify_zone_bucket_name, certify_folder_path):
         self.raw_zone_bucket_name = raw_zone_bucket_name
         self.error_folder = error_folder_path
         self.processed_folder = processed_folder_path
         self.certify_zone_bucket_name = certify_zone_bucket_name
         self.certify_folder = certify_folder_path
+        self.storage_client = storage.Client()
 
-    def setup(self):
-        self.storage_client = storage.Client(project_id)
-
-    def process(self, file_path):
+    def process_file(self, file_path):
         print(f"Processing file: {file_path}")
-        
+
         bucket = self.storage_client.bucket(self.raw_zone_bucket_name)
         blob = bucket.blob(file_path)
         content = blob.download_as_string().decode("utf-8")
@@ -46,54 +40,30 @@ class VolumeCheckAndClassify(beam.DoFn):
             certify_bucket = self.storage_client.bucket(self.certify_zone_bucket_name)
             certify_blob = certify_bucket.blob(certify_blob_name)
             certify_blob.upload_from_string(content)
-        
+
         # Delete the original file
         blob.delete()
-
-        yield file_path
+        print(f"File {filename} processed and moved accordingly.")
 
 def run_pipeline(project_id, raw_zone_bucket_name, raw_zone_folder_path, classified_folder_path, certify_zone_bucket_name, certify_folder_path):
-    # Configure pipeline options for DataflowRunner
-    options = PipelineOptions(
-        project=project_id,
-        runner="DataflowRunner",
-        region='europe-west2',
-        staging_location=f'gs://{raw_zone_bucket_name}/staging',
-        service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
-        dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
-        num_workers=1,
-        max_num_workers=4,
-        use_public_ips=False,
-        autoscaling_algorithm='THROUGHPUT_BASED',
-        save_main_session=True
-    )
-
     print("Initializing Google Cloud Storage client")
     storage_client = storage.Client(project_id)
     bucket = storage_client.get_bucket(raw_zone_bucket_name)
     blobs = [blob.name for blob in bucket.list_blobs(prefix=raw_zone_folder_path) if blob.name.endswith('.csv') and '/' not in blob.name[len(raw_zone_folder_path):].strip('/')]
 
     print(f"Found {len(blobs)} CSV files in raw zone folder: {raw_zone_folder_path}")
-    
-    # Define the Beam pipeline
-    p = beam.Pipeline(options=options)
-    
-    files = p | 'Create File List' >> beam.Create(blobs)
-    
-    # Apply the volume check and classification transformation
-    files | 'Volume Check and Classify' >> beam.ParDo(
-        VolumeCheckAndClassify(
-            raw_zone_bucket_name=raw_zone_bucket_name,
-            error_folder_path=f"{classified_folder_path}/error",
-            processed_folder_path=f"{classified_folder_path}/processed",
-            certify_zone_bucket_name=certify_zone_bucket_name,
-            certify_folder_path=certify_folder_path
-        )
+
+    volume_checker = VolumeCheckAndClassify(
+        raw_zone_bucket_name=raw_zone_bucket_name,
+        error_folder_path=f"{classified_folder_path}/error",
+        processed_folder_path=f"{classified_folder_path}/processed",
+        certify_zone_bucket_name=certify_zone_bucket_name,
+        certify_folder_path=certify_folder_path
     )
 
-    print("Running the Beam pipeline")
-    p.run().wait_until_finish()
+    for file_path in blobs:
+        volume_checker.process_file(file_path)
+
     print("Pipeline execution completed")
 
 if __name__ == "__main__":
@@ -106,11 +76,4 @@ if __name__ == "__main__":
     certify_folder_path = 'your-certify-folder-path'  # Placeholder for processed files in certify zone
 
     # Run the pipeline
-    run_pipeline(
-        project_id,
-        raw_zone_bucket_name,
-        raw_zone_folder_path,
-        classified_folder_path,
-        certify_zone_bucket_name,
-        certify_folder_path
-    )
+    run_pipeline(project_id,raw_zone_bucket_name,raw_zone_folder_path,classified_folder_path,certify_zone_bucket_name,certify_folder_path)

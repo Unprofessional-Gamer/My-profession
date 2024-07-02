@@ -182,4 +182,4 @@ if __name__ == "__main__":
     
     # Define the archive folder path with the current date in the format mm-yyyy
     current_date = datetime.now().strftime('%m-%Y')
-    archive_folder
+    archive_folder = 'thParty/GFV/Monthly'
