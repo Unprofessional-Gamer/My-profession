@@ -6,9 +6,12 @@ from airflow.operators.empty import EmptyOperator
 from airflow.providers.google.cloud.sensors.gcs import GoogleCloudStoragePrefixSensor
 import pendulum
 
+# Package
+# pip install apache-airflow-providers-google
+
 # Importing custom functions from your project
-from pricing_efv_dag.zipping import copy_and_transfer_csv, zip_and_transfer_csv_files
-from pricing_efv_dag.unzipping import run_pipeline
+from DAG.zipping import copy_and_transfer_csv, zip_and_transfer_csv_files
+from DAG.unzipping import run_pipeline
 
 # Setting up timezone and project variables
 local_tz = pendulum.timezone('Europe/Lisbon')
@@ -42,16 +45,17 @@ with DAG(
     
     date_folder = datetime.now().strftime('%m-%Y')
 
-    # Sensor to check for new files in the GCS bucket
+# Sensor to check for new files in the GCS bucket
     wait_for_files = GoogleCloudStoragePrefixSensor(
-        task_id="wait_for_files",
-        bucket=bucket_name,
-        prefix=prefix,
-        timeout=600,  # Wait for up to 10 minutes
-        poke_interval=60,  # Check every 60 seconds
-        mode='poke',
-        dag=dag,
-    )
+    task_id="wait_for_files",
+    bucket=bucket_name,
+    prefix=prefix,
+    timeout=3600 * 24,  # Wait for up to 24 hours
+    poke_interval=3600,  # Check every 1 hour
+    mode='poke',
+    dag=dag,
+)
+
 
     unzipping_job = PythonOperator(
         task_id="unzipping_job",

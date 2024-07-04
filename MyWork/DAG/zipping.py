@@ -3,10 +3,6 @@ import zipfile
 import io
 from datetime import datetime
 import os
-from apache_beam.options.pipeline_options import PipelineOptions
-import apache_beam as beam
-from apache_beam.io import fileio
-from apache_beam.io.fileio import ReadMatches
 
 gfv_files = {"CPRRVU", "CPRRVN", "LPRRVN", "LPRRVU"}
 
@@ -103,63 +99,6 @@ def copy_and_transfer_csv(project_id, raw_zone_bucket_name, certify_files_path, 
         else:
             print(f"Ignored file: {file_name}")
 
-def run_pipeline(project_id, raw_zone_bucket_name, certify_files_path, consumer_folder_path, consumer_archieve_path, consumer_bucket_name):
-    options = PipelineOptions(
-        project=project_id,
-        runner="DataflowRunner",
-        region='europe-west2',
-        staging_location=f'gs://{raw_zone_bucket_name}/staging',
-        service_account_email='svc-dfl-user@tnt01-odycda-bld-01-1681.iam.gserviceaccount.com',
-        dataflow_kms_key='projects/tnt01-odykms-bld-01-35d7/locations/europe-west2/keyRings/krs-kms-tnt01-euwe2-cdp/cryptoKeys/keyhsm-kms-tnt01-euwe2-cdp',
-        subnetwork='https://www.googleapis.com/compute/v1/projects/tnt01-hst-bld-e88h/regions/europe-west2/subnetworks/odycda-csn-euwe2-kc1-01-bld-01',
-        num_workers=1,
-        max_num_workers=4,
-        use_public_ips=False,
-        autoscaling_algorithm='THROUGHPUT_BASED',
-        save_main_session=True
-    )
-
-    def process_blob(blob_name):
-        storage_client = storage.Client(project=project_id)
-        raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
-        consumer_bucket = storage_client.bucket(consumer_bucket_name)
-        
-        blob = raw_zone_bucket.blob(blob_name)
-        date = extract_date_from_filename(blob_name)
-        naming_convention = check_naming_convention(blob_name, date)
-        file_name = blob_name.split('/')[-1]
-        
-        if naming_convention is not None:
-            zip_name = os.path.join(consumer_folder_path, naming_convention).replace("\\", "/")
-            zip_buffer = io.BytesIO()
-            csv_data = blob.download_as_bytes()
-            with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zipf:
-                zipf.writestr(file_name, csv_data)
-            zip_buffer.seek(0)
-            
-            # Upload to consumer_folder_path
-            zip_blob = consumer_bucket.blob(zip_name + ".zip")
-            zip_blob.upload_from_file(zip_buffer, content_type='application/zip')
-            
-            zip_buffer.seek(0)  # Reset the buffer to the beginning
-            
-            # Upload to consumer_archieve_path
-            archive_zip_name = zip_name.replace(consumer_folder_path, consumer_archieve_path)
-            archive_blob = consumer_bucket.blob(archive_zip_name + ".zip")
-            archive_blob.upload_from_file(zip_buffer, content_type='application/zip')
-        
-        return f"Processed {blob_name}"
-
-    with beam.Pipeline(options=options) as pipeline:
-        files = (
-            pipeline
-            | 'List files' >> fileio.MatchFiles(f'gs://{raw_zone_bucket_name}/{certify_files_path}/**/*.csv')
-            | 'Read matches' >> ReadMatches()
-            | 'Extract file paths' >> beam.Map(lambda x: x.metadata.path)
-            | beam.Map(print)
-            | 'Process files' >> beam.Map(process_blob)
-        )
-
 if __name__ == "__main__":
     
     project_id = 'tnt01-odycda-bld-01-1b81'
@@ -177,4 +116,4 @@ if __name__ == "__main__":
 
     print("**********Files zipping started**********")
     zip_and_transfer_csv_files(project_id, raw_zone_bucket_name, certify_files_path, consumer_bucket_name, consumer_folder_path, consumer_archieve_path)
-    print("**********Files zipping completed******")
+    print("**********Files zipping completed**********")
