@@ -7,8 +7,8 @@ from airflow.providers.google.cloud.sensors.gcs import GoogleCloudStoragePrefixS
 import pendulum
 
 # Importing custom functions from your project
-from pricing_efv_dag.zipping import copy_and_transfer_csv, zip_and_transfer_csv_files
-from pricing_efv_dag.unzipping import run_pipeline
+from DAG.zipping import copy_and_transfer_csv, zip_and_transfer_csv_files,delete_files
+from DAG.unzipping import run_pipeline
 
 # Setting up timezone and project variables
 local_tz = pendulum.timezone('Europe/Lisbon')
@@ -52,17 +52,13 @@ with DAG(
         mode='poke',
         dag=dag,
     )
-
+    
     unzipping_job = PythonOperator(
         task_id="unzipping_job",
         python_callable=run_pipeline,
         op_args=[
             project_id,
-            bucket_name,
-            'INTERNAL/MFVS/GFV/DAILY/RECEIVED',
-            'INTERNAL/MFVS/CAP/DAILY/RECEIVED',
-            'thParty/MFVS/GFV/EXTRACT'
-        ],
+            bucket_name,'INTERNAL/MFVS/GFV/DAILY/RECEIVED','INTERNAL/MFVS/CAP/DAILY/RECEIVED','thParty/MFVS/GFV/EXTRACT'],
         dag=dag,
     )
 
@@ -71,13 +67,7 @@ with DAG(
         python_callable=copy_and_transfer_csv,
         op_args=[
             project_id,
-            bucket_name,
-            'thParty/MFVS/GFV/EXTRACT',
-            'tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3',
-            f'thParty/GFV/Monthly/SEGDrop',
-            f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE',
-            {"CPRRVU", "CPRRVN", "LPRRVU", "LPRRVN"}
-        ],
+            bucket_name,'thParty/MFVS/GFV/EXTRACT','tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3','thParty/GFV/Monthly/SEGDrop',f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE',{"CPRRVU", "CPRRVN", "LPRRVU", "LPRRVN"}],
         dag=dag,
     )
 
@@ -87,15 +77,19 @@ with DAG(
         op_args=[
             project_id,
             bucket_name,
-            'thParty/MFVS/GFV/EXTRACT',
-            'tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3',
-            f'thParty/GFV/Monthly/SEGDrop',
-            f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE'
-        ],
+            'thParty/MFVS/GFV/EXTRACT','tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3','thParty/GFV/Monthly/SEGDrop',f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE'],
+        dag=dag,
+    )
+
+    deleting_job = PythonOperator(
+        task_id="sourcefiles_deleting_job",
+        python_callable=run_pipeline,
+        op_args=[
+            project_id,bucket_name,'thParty/MFVS/GFV/EXTRACT'],
         dag=dag,
     )
 
     end = EmptyOperator(task_id='end', dag=dag)
 
     # Setting task dependencies
-    start >> wait_for_files >> unzipping_job >> moving_gfvfiles_job >> zipfiles_job >> end
+    start >> wait_for_files >> unzipping_job >> moving_gfvfiles_job >> zipfiles_job >> deleting_job >> end

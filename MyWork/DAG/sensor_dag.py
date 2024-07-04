@@ -10,7 +10,7 @@ import pendulum
 # pip install apache-airflow-providers-google
 
 # Importing custom functions from your project
-from DAG.zipping import copy_and_transfer_csv, zip_and_transfer_csv_files
+from DAG.zipping import copy_and_transfer_csv, zip_and_transfer_csv_files,de
 from DAG.unzipping import run_pipeline
 
 # Setting up timezone and project variables
@@ -62,11 +62,7 @@ with DAG(
         python_callable=run_pipeline,
         op_args=[
             project_id,
-            bucket_name,
-            'INTERNAL/MFVS/GFV/DAILY/RECEIVED',
-            'INTERNAL/MFVS/CAP/DAILY/RECEIVED',
-            'thParty/MFVS/GFV/EXTRACT'
-        ],
+            bucket_name,'INTERNAL/MFVS/GFV/DAILY/RECEIVED','INTERNAL/MFVS/CAP/DAILY/RECEIVED','thParty/MFVS/GFV/EXTRACT'],
         dag=dag,
     )
 
@@ -75,13 +71,7 @@ with DAG(
         python_callable=copy_and_transfer_csv,
         op_args=[
             project_id,
-            bucket_name,
-            'thParty/MFVS/GFV/EXTRACT',
-            'tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3',
-            f'thParty/GFV/Monthly/SEGDrop',
-            f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE',
-            {"CPRRVU", "CPRRVN", "LPRRVU", "LPRRVN"}
-        ],
+            bucket_name,'thParty/MFVS/GFV/EXTRACT','tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3','thParty/GFV/Monthly/SEGDrop',f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE',{"CPRRVU", "CPRRVN", "LPRRVU", "LPRRVN"}],
         dag=dag,
     )
 
@@ -91,15 +81,23 @@ with DAG(
         op_args=[
             project_id,
             bucket_name,
-            'thParty/MFVS/GFV/EXTRACT',
-            'tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3',
-            f'thParty/GFV/Monthly/SEGDrop',
-            f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE'
-        ],
+            'thParty/MFVS/GFV/EXTRACT','tnt01-odycda-bld-01-stb-eu-tdip-consumer-78a45ff3','thParty/GFV/Monthly/SEGDrop',f'thParty/MFVS/GFV/Monthly/{date_folder}/ARCHIEVE'],
+        dag=dag,
+    )
+
+    deleting_job = PythonOperator(
+        task_id="sourcefiles_deleting_job",
+        python_callable=run_pipeline,
+        op_args=[
+            project_id,bucket_name,'thParty/MFVS/GFV/EXTRACT'],
         dag=dag,
     )
 
     end = EmptyOperator(task_id='end', dag=dag)
 
     # Setting task dependencies
-    start >> wait_for_files >> unzipping_job >> moving_gfvfiles_job >> zipfiles_job >> end
+    start >> wait_for_files >> unzipping_job >> moving_gfvfiles_job >> zipfiles_job >> deleting_job >> end
+
+
+    # Documentation 
+    # https://airflow.apache.org/docs/apache-airflow-providers-google/stable/operators/cloud/gcs.html#googlecloudstorageprefixsensor

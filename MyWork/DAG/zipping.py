@@ -99,6 +99,19 @@ def copy_and_transfer_csv(project_id, raw_zone_bucket_name, certify_files_path, 
         else:
             print(f"Ignored file: {file_name}")
 
+def delete_files(project_id, raw_zone_bucket_name, certify_files_path):
+    """Delete files from certify_files_path."""
+    storage_client = storage.Client(project=project_id)
+    raw_zone_bucket = storage_client.bucket(raw_zone_bucket_name)
+
+    blob_list = list(raw_zone_bucket.list_blobs(prefix=certify_files_path))
+
+    for blob in blob_list:
+        print(f"Deleting file: {blob.name}")
+        blob.delete()
+
+    print(f"Deleted {len(blob_list)} files from {certify_files_path}")
+
 if __name__ == "__main__":
     
     project_id = 'tnt01-odycda-bld-01-1b81'
@@ -117,3 +130,7 @@ if __name__ == "__main__":
     print("**********Files zipping started**********")
     zip_and_transfer_csv_files(project_id, raw_zone_bucket_name, certify_files_path, consumer_bucket_name, consumer_folder_path, consumer_archieve_path)
     print("**********Files zipping completed**********")
+
+    print("**********Deleting files started**********")
+    delete_files(project_id, raw_zone_bucket_name, certify_files_path)
+    print("**********Deleting files completed**********")
