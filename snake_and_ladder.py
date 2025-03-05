@@ -1,51 +1,328 @@
-import random
+from google.cloud import storage, bigquery
+import pandas as pd
+from io import StringIO
+from datetime import datetime, timedelta
+import apache_beam as beam
+import logging
+import sys
+from apache_beam.options.pipeline_options import PipelineOptions
+import datetime
+from apache_beam.io.gcp.gcsio import GcsIO
 
-# Define the board
-board = [i for i in range(101)]
+# Consolidated schema for BigQuery
+consolidated_schema = {
+    "fields": [
+        {"name": "DATASET", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "FILE_DATE", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "PROCESSED_DATE_TIME", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "FILENAME", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "SOURCE_COUNT", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "RAW_RECORDS", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "RAW_FAILED_RECORDS", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "CERT_RECORDS", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "CERT_FAILED_RECORDS", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "ANAL_RECORDS", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "ANAL_FAILED_RECORDS", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "RAW_COLUMN", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "CERT_COLUMN", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "ANAL_COLUMN", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "ANAL_col_sums", "type": "RECORD", "mode": "REPEATED", "fields": [
+            {"name": "column_name", "type": "STRING", "mode": "NULLABLE"},
+            {"name": "sum_value", "type": "STRING", "mode": "NULLABLE"}
+        ]},
+        {"name": "BQ_STATUS", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "BQ_FAILED", "type": "INTEGER", "mode": "NULLABLE"},
+        {"name": "REASON", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "price_action", "type": "FLOAT", "mode": "NULLABLE"}
+    ]
+}
 
-# Snakes and ladders as a dictionary where key is the start and value is the end
-snakes = {16: 6, 47: 26, 49: 11, 56: 53, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 78}
-ladders = {1: 38, 4: 14, 9: 31, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 80: 100}
+# Mapping of dataset names to file prefixes and BigQuery tables
+dataset_to_files_and_tables = {
+    "PRE_EMBARGO": {
+        "Pre_embargo_land_rover_Capder": "PRE_EMBARGO_LR_CAPDER",
+        "Pre_embargo_land_rover_Price": "PRE_EMBARGO_LR_PRICE",
+        "Pre_embargo_land_rover_Option": "PRE_EMBARGO_LR_OPTION"
+    },
+    "BLACKBOOK": {
+        "CPRVAL": "BLACKBOOK_BQ_TABLE"
+    },
+    "REDBOOK": {
+        "LPRVAL": "REDBOOK_BQ_TABLE"
+    }
+}
 
-# Function to roll the dice
-def roll_dice():
-    return random.randint(1, 6)
+# Function to get schema from BigQuery
+def get_bq_schema(project_id, dataset_id, table_id):
+    bq_client = bigquery.Client(project=project_id)
+    table_ref = bq_client.dataset(dataset_id).table(table_id)
+    table = bq_client.get_table(table_ref)
+    schema = table.schema
+    return {field.name: field.field_type for field in schema}
 
-# Function to move player
-def move_player(player_position):
-    dice_value = roll_dice()
-    player_position += dice_value
-    if player_position > 100:
-        player_position -= dice_value  # If move goes beyond 100, stay in the same place
-    elif player_position in snakes:
-        print(f"Oops! Bitten by a snake at {player_position}")
-        player_position = snakes[player_position]
-    elif player_position in ladders:
-        print(f"Yay! Climbed a ladder at {player_position}")
-        player_position = ladders[player_position]
-    return player_position
+def get_bq_column_names(bq_schema, exclude_columns=[]):
+    return [col for col in bq_schema if col not in exclude_columns]
 
-# Main game loop
-def play_game():
-    player1_position = 0
-    player2_position = 0
-    turn = 0
+# Function to get the total records from the metadata file
+def metadata_count(bucket_name, metadata_file):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    metadatafile = metadata_file[:-4] + ".metadata.csv"
+    blob = bucket.blob(metadatafile)
+    content = blob.download_as_text()
 
-    while player1_position < 100 and player2_position < 100:
-        if turn % 2 == 0:
-            print("Player 1's turn")
-            player1_position = move_player(player1_position)
-            print(f"Player 1 is now at {player1_position}")
-        else:
-            print("Player 2's turn")
-            player2_position = move_player(player2_position)
-            print(f"Player 2 is now at {player2_position}")
-        turn += 1
+    df = pd.read_csv(StringIO(content))
 
-    if player1_position >= 100:
-        print("Player 1 wins!")
+    total_records = df[df['Key'] == 'Total Records']['Value'].values[0]
+    return int(total_records)
+
+# Function to list CSV files in the GCS folder
+def list_files_in_folder(bucket_name, folder_path, dataset):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blobs = bucket.list_blobs(prefix=folder_path)
+    files = [blob.name for blob in blobs if blob.name.endswith(".csv")]
+    return files
+
+def check_received_folder(project_id, raw_bucket):
+    client = storage.Client(project=project_id)
+    received_dates = []
+    received_path = "abcn/recived_path/files"
+    received_list = client.list_blobs(raw_bucket, prefix=received_path)
+    for blob in received_list:
+        if blob.name.endswith('.csv') and 'metadata' not in blob.name and 'schema' not in blob.name:
+            received_dates.append(blob.name.split('/')[-2])
+            return max(set(received_dates))
+
+# Function to read CSV file from GCS, excluding specific columns, and get record count and column sums
+def get_record_count(bucket_name, file_path, zone, skip_header, bq_schema):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(file_path)
+    content = blob.download_as_text()
+
+    if zone in ["RAW", "CERT"]:
+        column_names = get_bq_column_names(bq_schema, exclude_columns=['MONTH'])
     else:
-        print("Player 2 wins!")
+        column_names = get_bq_column_names(bq_schema)
 
-# Start the game
-play_game()
+    df = pd.read_csv(StringIO(content), header=None, names=column_names, low_memory=False)
+    column_count = len(df.columns)
+
+    if zone in ["RAW", "CERT"]:
+        record_count = len(df)
+    else:
+        record_count = len(df) - skip_header
+    return record_count, column_count
+
+# Function to dynamically get column sums based on BigQuery schema and CSV data
+def get_col_sum_dynamic(bucket_name, file_path, skip_header, zone, bq_schema):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(file_path)
+    content = blob.download_as_text()
+
+    # Read CSV into pandas DataFrame
+    df = pd.read_csv(StringIO(content), header=0 if skip_header else None, low_memory=False)
+
+    numeric_columns = df.select_dtypes(include=["int64", "float64"]).columns
+    column_sums = []
+
+    # Only calculate sums for ANAL zone
+    if zone == "ANAL":
+        for col in numeric_columns:
+            if col in bq_schema and bq_schema[col] in ["INTEGER", "FLOAT"]:
+                column_sums.append({
+                    "column_name": col,
+                    "sum_value": str(df[col].sum())
+                })
+
+    return column_sums
+
+# Function to process the analytical zone and compare records with BigQuery
+def analytic_to_bq_checking(ana_bucket_name, dataset, folder_base, project_id, records, bq_table_name):
+    # Initialize GCS and BigQuery clients
+    client = storage.Client(project_id)
+    fs = GcsIO(client)
+    ana_bucket = client.bucket(ana_bucket_name)
+    blob_list_ana = client.list_blobs(ana_bucket, prefix=f"EXTERNAL/MFVS/PRICING/CAP-HPI/{dataset}/{folder_base}/RECEIVED/{month_folder}")
+
+    # Loop through the blobs in the bucket
+    for blob_ana in blob_list_ana:
+        # Define filename at the beginning of the loop
+        filename = blob_ana.name.split('/')[-1]
+
+        try:
+            # Check if the file name contains the specified substrings
+            if any(x in blob_ana.name for x in [dataset]):
+                with fs.open(f"gs://{ana_bucket_name}/{blob_ana.name}", mode='r') as pf:
+                    ana_lines = pf.readlines()
+
+                # Count the number of lines in the file (assuming the first line is a header)
+                if dataset not in ["CAP_NVD_CAR", "CAP_NVD_LCV", "PRE_EMBARGO_J", "PRE_EMBARGO_LR"]:
+                    ana_count = len(ana_lines) - 1
+                    logging.info(f"File lines for {filename} is {ana_count}")
+
+                    # Extract month column from the file name and format it for the query
+                    month_col = datetime.datetime.strptime(blob_ana.name.split('/')[-2], '%Y%m%d').strftime('%Y-%m-%d')
+
+                    # Query BigQuery for the count of records by month in the specified table
+                    QUERY = f"""
+                        SELECT count(*) as count FROM `{bq_table_name}`
+                        WHERE MONTH = '{month_col}'
+                    """
+                    bq_client = bigquery.Client(project_id)
+                    query_job = bq_client.query(QUERY)  # API request
+                    rows = query_job.result()
+
+                    # Compare record counts
+                    for row in rows:
+                        bq_count = row.count
+                        logging.info(f"BQ table count for {month_col} is {bq_count}")
+
+                        if bq_count == ana_count:
+                            bq_status = "Match"
+                            bq_failed_count = 0
+                            mismatch = ana_count - bq_count
+                            reason = (f"{bq_status} : Bcoz ana_records({ana_count}) == BQ_count({bq_count}) = mismatch({mismatch})")
+                            logging.info(f"Data count matches for {filename} in analytical zone.")
+                        else:
+                            bq_status = "Not Match"
+                            bq_failed_count = abs(ana_count - bq_count)
+                            mismatch = ana_count - bq_count
+                            reason = (f"{bq_status} : Bcoz ana_records({ana_count}) != BQ_count({bq_count}) = mismatch({mismatch})")
+                            logging.info(f"Data count does not match for {filename} in analytical zone.")
+
+                        # Update the records dictionary with BQ comparison result
+                        if filename in records:
+                            records[filename]["BQ_STATUS"] = bq_status
+                            records[filename]["BQ_FAILED"] = bq_failed_count
+                            records[filename]["REASON"] = reason
+
+        except Exception as e:
+            # Log the error with the filename
+            logging.error(f"Error processing Analytical zone file: {filename} from {dataset}: {str(e)}")
+            raise
+
+    return records
+
+# Main processing function that integrates all components
+def process_files(buckets_info, folder_path, dataset, project_id, dataset_id, bq_table_name):
+    records = {}
+    file_prefix = dataset_to_prefix.get(dataset, "")
+    bq_schema = get_bq_schema(project_id, dataset_id, bq_table_name)
+
+    for zone, bucket_name in buckets_info.items():
+        files = list_files_in_folder(bucket_name, folder_path, dataset)
+
+        for file in files:
+            filename = file.split("/")[-1]
+            if not filename.startswith(file_prefix) or filename.endswith(("schema.csv", "metadata.csv")):
+                continue
+
+            # Common processing for all zones
+            skip_header = (zone == "ANAL")
+            record_count, column_count = get_record_count(bucket_name, file, zone, skip_header, bq_schema)
+
+            if zone == "RAW":
+                source_count = metadata_count(bucket_name, file)
+
+            # File metadata
+            pick_date = file.split("/")[-2]
+            folder_date = f"{pick_date[:4]}-{pick_date[4:6]}-{pick_date[6:]}"
+            processed_time = datetime.now().strftime("%d/%m/%Y T %H:%M:%S")
+
+            if filename not in records:
+                records[filename] = {
+                    "DATASET": dataset,
+                    "FILE_DATE": folder_date,
+                    "PROCESSED_DATE_TIME": processed_time,
+                    "FILENAME": filename,
+                    "SOURCE_COUNT": source_count if zone == "RAW" else 0,
+                    "RAW_RECORDS": 0, "CERT_RECORDS": 0, "ANAL_RECORDS": 0,
+                    "RAW_FAILED_RECORDS": 0, "CERT_FAILED_RECORDS": 0, "ANAL_FAILED_RECORDS": 0,
+                    "RAW_COLUMN": 0, "CERT_COLUMN": 0, "ANAL_COLUMN": 0,
+                    "ANAL_col_sums": [],
+                    "BQ_STATUS": "", "BQ_FAILED": 0, "REASON": "",
+                    "price_action": 0.0
+                }
+
+            # Zone-specific processing
+            if zone == "RAW":
+                records[filename].update({
+                    "RAW_RECORDS": record_count,
+                    "RAW_COLUMN": column_count,
+                    "SOURCE_COUNT": source_count,
+                    "RAW_FAILED_RECORDS": records[filename]["SOURCE_COUNT"] - record_count
+                })
+            elif zone == "CERT":
+                records[filename].update({
+                    "CERT_RECORDS": record_count,
+                    "CERT_COLUMN": column_count,
+                    "CERT_FAILED_RECORDS": records[filename]["RAW_RECORDS"] - record_count
+                })
+            elif zone == "ANAL":
+                records[filename].update({
+                    "ANAL_RECORDS": record_count,
+                    "ANAL_COLUMN": column_count,
+                    "ANAL_FAILED_RECORDS": records[filename]["CERT_RECORDS"] - record_count,
+                    "ANAL_col_sums": get_col_sum_dynamic(bucket_name, file, skip_header, zone, bq_schema)
+                })
+
+    # Get the BigQuery table name for the dataset
+    bq_table_name_analytic = dataset_to_bq_table.get(dataset, "")
+    if bq_table_name_analytic:
+        records = analytic_to_bq_checking(buckets_info["ANAL"], dataset, folder_base, project_id, records, bq_table_name_analytic)
+    return list(records.values())[0]
+
+# Beam pipeline to process and write to BigQuery
+def run_pipeline(project_id, folder_path, raw_bucket, cert_bucket, anal_bucket, bq_dataset_id, bq_table_name, dataset):
+    options = PipelineOptions(
+        project=project_id,
+        runner="DataflowRunner",
+        region="europe-west2",
+        job_name=f"reconciliation_{dataset}".lower(),
+        staging_location=f"gs://{raw_bucket}/staging",
+        temp_location=f"gs://{raw_bucket}/temp",
+        num_workers=2,
+        max_num_workers=8,
+        use_public_ips=False,
+        autoscaling_algorithm="THROUGHPUT_BASED",
+        save_main_session=True
+    )
+
+    with beam.Pipeline(options=options) as p:
+        records = process_files(
+            {"RAW": raw_bucket, "CERT": cert_bucket, "ANAL": anal_bucket},
+            folder_path,
+            dataset,
+            project_id,
+            bq_dataset_id,
+            bq_table_name
+        )
+        output = p | beam.Create(records)
+        output | beam.io.WriteToBigQuery(table=bq_table_name, dataset=bq_dataset_id, schema=consolidated_schema, project=project_id, custom_gcs_temp_location=f"gs://{raw_bucket}/temp", write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND, create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
+        )
+
+if __name__ == "__main__":
+    # Determine the dataset from command-line argument, defaulting to "BLACKBOOK"
+    dataset = sys.argv[1] if len(sys.argv) > 1 else "REDBOOK"
+
+    # Use "DAILY" folder for specific datasets and "MONTHLY" for others
+    folder_base = "DAILY" if dataset in ["CAP_NVD_CAR", "CAP_NVD_LCV", "PRE_EMBARGO_J", "PRE_EMBARGO_LR"] else "MONTHLY"
+
+    project_id = "your_project_id"
+    bq_dataset_id = "your_dataset_id"
+    bq_table_name = "consolidated_record_report"
+
+    # Bucket IDs
+    raw_bucket = "raw_001uejeu_uej"
+    cert_bucket = "cert_001uejeu_uej"
+    anal_bucket = "anal_001uejeu_uej"
+
+    month_folder = check_received_folder(project_id, raw_bucket)
+    folder_path = f"EXTERNAL/MFVS/PRICING/CAP-HPI/{dataset}/{folder_base}/RECEIVED/{month_folder}/"
+
+    print(f"Processing files for dataset: {dataset} in folder: {folder_path}")
+    print("************************ Recon Started ********************")
+    run_pipeline(
