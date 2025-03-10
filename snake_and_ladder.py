@@ -1,12 +1,11 @@
 from google.cloud import storage, bigquery
 import pandas as pd
 from io import StringIO
-from datetime import datetime, timedelta
+from datetime import datetime
 import apache_beam as beam
 import logging
 import sys
 from apache_beam.options.pipeline_options import PipelineOptions
-import datetime
 from apache_beam.io.gcp.gcsio import GcsIO
 
 # Consolidated schema for BigQuery
@@ -33,22 +32,43 @@ consolidated_schema = {
         {"name": "BQ_STATUS", "type": "STRING", "mode": "NULLABLE"},
         {"name": "BQ_FAILED", "type": "INTEGER", "mode": "NULLABLE"},
         {"name": "REASON", "type": "STRING", "mode": "NULLABLE"},
-        {"name": "price_action", "type": "FLOAT", "mode": "NULLABLE"}
+        {"name": "price_action", "type": "FLOAT", "mode": "NULLABLE"}  # New column
     ]
 }
 
-# Mapping of dataset names to file prefixes and BigQuery tables
-dataset_to_files_and_tables = {
-    "PRE_EMBARGO": {
-        "Pre_embargo_land_rover_Capder": "PRE_EMBARGO_LR_CAPDER",
-        "Pre_embargo_land_rover_Price": "PRE_EMBARGO_LR_PRICE",
-        "Pre_embargo_land_rover_Option": "PRE_EMBARGO_LR_OPTION"
+# Mapping of dataset names to file prefixes
+dataset_to_prefix = {
+    "BLACKBOOK": "CPRVAL",
+    "REDBOOK": "LPRVAL",
+    "GOLDBOOK": "CPRRVN",
+    "MONITOR": "LPRRVN",
+    "MONITOR_USED_CAR": "CPRRVU",
+    "MONITOR_USED_LCV": "LPRRVU",
+    "PRE_EMBARGO_J": "PRE_EMBARGO_J",
+    "PRE_EMBARGO_K": "PRE_EMBARGO_K"
+}
+
+# Mapping of dataset names to BigQuery table names
+dataset_to_bq_table = {
+    "BLACKBOOK": "BLACKBOOK_BQ_TABLE",
+    "REDBOOK": "REDBOOK_BQ_TABLE",
+    "GOLDBOOK": "GOLDBOOK_BQ_TABLE",
+    "MONITOR": "MONITOR_BQ_TABLE",
+    "MONITOR_USED_CAR": "MONITOR_USED_CAR_BQ_TABLE",
+    "MONITOR_USED_LCV": "MONITOR_USED_LCV_BQ_TABLE",
+    "PRE_EMBARGO_J": {
+        "files": ["CapDer.csv", "NDVGenericStatus.csv", "NVDModelYear.csv", "Capvehicles.csv"],
+        "CapDer.csv": {"bq_table": "PRE_EMBARGO_J_CAPDER"},
+        "NDVGenericStatus.csv": {"bq_table": "PRE_EMBARGO_J_NDVGENERICSTATUS"},
+        "NVDModelYear.csv": {"bq_table": "PRE_EMBARGO_J_NVDMODELYEAR"},
+        "Capvehicles.csv": {"bq_table": "PRE_EMBARGO_J_CAPVEHICLES"}
     },
-    "BLACKBOOK": {
-        "CPRVAL": "BLACKBOOK_BQ_TABLE"
-    },
-    "REDBOOK": {
-        "LPRVAL": "REDBOOK_BQ_TABLE"
+    "PRE_EMBARGO_K": {
+        "files": ["CapDer.csv", "NDVGenericStatus.csv", "NVDModelYear.csv", "Capvehicles.csv"],
+        "CapDer.csv": {"bq_table": "PRE_EMBARGO_K_CAPDER"},
+        "NDVGenericStatus.csv": {"bq_table": "PRE_EMBARGO_K_NDVGENERICSTATUS"},
+        "NVDModelYear.csv": {"bq_table": "PRE_EMBARGO_K_NVDMODELYEAR"},
+        "Capvehicles.csv": {"bq_table": "PRE_EMBARGO_K_CAPVEHICLES"}
     }
 }
 
@@ -149,7 +169,6 @@ def analytic_to_bq_checking(ana_bucket_name, dataset, folder_base, project_id, r
 
     # Loop through the blobs in the bucket
     for blob_ana in blob_list_ana:
-        # Define filename at the beginning of the loop
         filename = blob_ana.name.split('/')[-1]
 
         try:
@@ -159,14 +178,14 @@ def analytic_to_bq_checking(ana_bucket_name, dataset, folder_base, project_id, r
                     ana_lines = pf.readlines()
 
                 # Count the number of lines in the file (assuming the first line is a header)
-                if dataset not in ["CAP_NVD_CAR", "CAP_NVD_LCV", "PRE_EMBARGO_J", "PRE_EMBARGO_LR"]:
+                if dataset not in ["CAP_NVD_CAR", "CAP_NVD_LCV", "PRE_EMBARGO_J", "PRE_EMBARGO_K"]:
                     ana_count = len(ana_lines) - 1
                     logging.info(f"File lines for {filename} is {ana_count}")
 
                     # Extract month column from the file name and format it for the query
                     month_col = datetime.datetime.strptime(blob_ana.name.split('/')[-2], '%Y%m%d').strftime('%Y-%m-%d')
 
-                    # Query BigQuery for the count of records by month in the specified table
+                    # Query the correct BigQuery table
                     QUERY = f"""
                         SELECT count(*) as count FROM `{bq_table_name}`
                         WHERE MONTH = '{month_col}'
@@ -207,28 +226,60 @@ def analytic_to_bq_checking(ana_bucket_name, dataset, folder_base, project_id, r
     return records
 
 # Main processing function that integrates all components
-def process_files(buckets_info, folder_path, dataset, project_id, dataset_id, bq_table_name):
+def process_files(buckets_info, folder_path, dataset, project_id, dataset_id):
     records = {}
     file_prefix = dataset_to_prefix.get(dataset, "")
-    bq_schema = get_bq_schema(project_id, dataset_id, bq_table_name)
+
+    # Get the list of files and their corresponding BigQuery table names
+    if dataset in ["PRE_EMBARGO_J", "PRE_EMBARGO_K"]:
+        file_bq_mapping = dataset_to_bq_table[dataset]
+        files_to_match = file_bq_mapping["files"]  # Files to match (e.g., ['CapDer.csv', 'NDVGenericStatus.csv', ...])
+    else:
+        files_to_match = None  # For other datasets, process all files
 
     for zone, bucket_name in buckets_info.items():
-        files = list_files_in_folder(bucket_name, folder_path, dataset)
+        files_in_folder = list_files_in_folder(bucket_name, folder_path, dataset)
 
-        for file in files:
-            filename = file.split("/")[-1]
-            if not filename.startswith(file_prefix) or filename.endswith(("schema.csv", "metadata.csv")):
+        for file_path in files_in_folder:
+            filename = file_path.split("/")[-1]
+
+            # Skip files that don't match the criteria
+            if filename.endswith(("schema.csv", "metadata.csv")):
                 continue
+
+            # For PRE_EMBARGO_J or PRE_EMBARGO_K, check if the file ends with any of the specified filenames
+            if dataset in ["PRE_EMBARGO_J", "PRE_EMBARGO_K"]:
+                matched_file = None
+                for file_to_match in files_to_match:
+                    if filename.endswith(file_to_match):
+                        matched_file = file_to_match
+                        break
+
+                if not matched_file:
+                    logging.warning(f"Skipping file {filename} as it does not match any specified filenames for dataset {dataset}.")
+                    continue
+
+                # Get the corresponding BigQuery table name
+                bq_table_name = file_bq_mapping[matched_file]["bq_table"]
+            else:
+                # For other datasets, use the default BigQuery table name
+                bq_table_name = dataset_to_bq_table.get(dataset, "")
+
+            # Fetch the schema for the corresponding BigQuery table
+            bq_schema = get_bq_schema(project_id, dataset_id, bq_table_name)
 
             # Common processing for all zones
             skip_header = (zone == "ANAL")
-            record_count, column_count = get_record_count(bucket_name, file, zone, skip_header, bq_schema)
+            record_count, column_count = get_record_count(bucket_name, file_path, zone, skip_header, bq_schema)
 
-            if zone == "RAW":
-                source_count = metadata_count(bucket_name, file)
+            # For PRE_EMBARGO_J or PRE_EMBARGO_K, use raw zone record count as source count
+            if dataset in ["PRE_EMBARGO_J", "PRE_EMBARGO_K"] and zone == "RAW":
+                source_count = record_count
+            elif zone == "RAW":
+                source_count = metadata_count(bucket_name, file_path)
 
             # File metadata
-            pick_date = file.split("/")[-2]
+            pick_date = file_path.split("/")[-2]
             folder_date = f"{pick_date[:4]}-{pick_date[4:6]}-{pick_date[6:]}"
             processed_time = datetime.now().strftime("%d/%m/%Y T %H:%M:%S")
 
@@ -266,14 +317,27 @@ def process_files(buckets_info, folder_path, dataset, project_id, dataset_id, bq
                     "ANAL_RECORDS": record_count,
                     "ANAL_COLUMN": column_count,
                     "ANAL_FAILED_RECORDS": records[filename]["CERT_RECORDS"] - record_count,
-                    "ANAL_col_sums": get_col_sum_dynamic(bucket_name, file, skip_header, zone, bq_schema)
+                    "ANAL_col_sums": get_col_sum_dynamic(bucket_name, file_path, skip_header, zone, bq_schema)
                 })
 
-    # Get the BigQuery table name for the dataset
-    bq_table_name_analytic = dataset_to_bq_table.get(dataset, "")
-    if bq_table_name_analytic:
-        records = analytic_to_bq_checking(buckets_info["ANAL"], dataset, folder_base, project_id, records, bq_table_name_analytic)
-    return list(records.values())[0]
+    # Perform analytical zone checking for each file
+    if dataset in ["PRE_EMBARGO_J", "PRE_EMBARGO_K"]:
+        for filename, record in records.items():
+            matched_file = None
+            for file_to_match in files_to_match:
+                if filename.endswith(file_to_match):
+                    matched_file = file_to_match
+                    break
+
+            if matched_file:
+                bq_table_name = file_bq_mapping[matched_file]["bq_table"]
+                records = analytic_to_bq_checking(buckets_info["ANAL"], dataset, folder_base, project_id, records, bq_table_name)
+    else:
+        bq_table_name = dataset_to_bq_table.get(dataset, "")
+        if bq_table_name:
+            records = analytic_to_bq_checking(buckets_info["ANAL"], dataset, folder_base, project_id, records, bq_table_name)
+    return list(records.values())
+
 
 # Beam pipeline to process and write to BigQuery
 def run_pipeline(project_id, folder_path, raw_bucket, cert_bucket, anal_bucket, bq_dataset_id, bq_table_name, dataset):
@@ -324,5 +388,4 @@ if __name__ == "__main__":
     folder_path = f"EXTERNAL/MFVS/PRICING/CAP-HPI/{dataset}/{folder_base}/RECEIVED/{month_folder}/"
 
     print(f"Processing files for dataset: {dataset} in folder: {folder_path}")
-    print("************************ Recon Started ********************")
-    run_pipeline(
+    print("************************ Recon")
