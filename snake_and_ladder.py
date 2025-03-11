@@ -118,6 +118,8 @@ def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_
     dataset_info = dataset_mapping.get(dataset, {})
     prefix = dataset_info.get("prefix", "")
     bq_table_map = dataset_info.get("tables", {})
+    
+    bq_table_name = None  # Ensure the variable is initialized
 
     for zone, bucket_name in buckets_info.items():
         files = list_files_in_folder(bucket_name, folder_path)
@@ -131,7 +133,7 @@ def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_
             bq_table_name = bq_table_map.get(table_name_key, "")
 
             if not bq_table_name:
-                continue
+                continue  # Skip this file if table name is not found
 
             bq_schema = get_bq_schema(project_id, bq_dataset_id, bq_table_name)
 
@@ -164,10 +166,11 @@ def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_
             elif zone == "ANAL":
                 records[filename].update({"ANAL_RECORDS": record_count, "ANAL_COLUMN": column_count, "ANAL_FAILED_RECORDS": records[filename]["CERT_RECORDS"] - record_count, "ANAL_col_sums": column_sums})
 
+    # Only call the function if bq_table_name is not None or empty
+    if bq_table_name:
         records = analytic_to_bq_checking(buckets_info["ANAL"], dataset, project_id, records, bq_table_name)
 
     return list(records.values())
-
 # Run Apache Beam pipeline
 def run_pipeline():
     options = PipelineOptions()
