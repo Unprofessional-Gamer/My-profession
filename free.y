@@ -21,14 +21,14 @@ dataset_mapping = {
             "PreEmbargoed_Land_Rover_NVDStandardEquipment.csv",
             "PreEmbargoed_Land_Rover_NVDTechnical.csv"
         ],
-        "PreEmbargoed_Land_Rover_CAPVehicles.csv": {"bq_table": "PRE_EMBARGO_LR_CAPVEHICLES"},
-        "PreEmbargoed_Land_Rover_CapDer.csv": {"bq_table": "PRE_EMBARGO_LR_CAPDER"},
-        "PreEmbargoed_Land_Rover_NVDGenericStatus.csv": {"bq_table": "PRE_EMBARGO_LR_NDVGENERICSTATUS"},
-        "PreEmbargoed_Land_Rover_NVDModelYear.csv": {"bq_table": "PRE_EMBARGO_LR_NVDMODELYEAR"},
-        "PreEmbargoed_Land_Rover_NVDOptions.csv": {"bq_table": "PRE_EMBARGO_LR_NVDOPTIONS"},
-        "PreEmbargoed_Land_Rover_NVDPrices.csv": {"bq_table": "PRE_EMBARGO_LR_NVDPRICES"},
-        "PreEmbargoed_Land_Rover_NVDStandardEquipment.csv": {"bq_table": "PRE_EMBARGO_LR_NVDSTANDARDEQUIPMENT"},
-        "PreEmbargoed_Land_Rover_NVDTechnical.csv": {"bq_table": "PRE_EMBARGO_LR_NVDTECHNICAL"}
+        "CAPVehicles": {"bq_table": "PRE_EMBARGO_LR_CAPVEHICLES"},
+        "CapDer": {"bq_table": "PRE_EMBARGO_LR_CAPDER"},
+        "NVDGenericStatus": {"bq_table": "PRE_EMBARGO_LR_NDVGENERICSTATUS"},
+        "NVDModelYear": {"bq_table": "PRE_EMBARGO_LR_NVDMODELYEAR"},
+        "NVDOptions": {"bq_table": "PRE_EMBARGO_LR_NVDOPTIONS"},
+        "NVDPrices": {"bq_table": "PRE_EMBARGO_LR_NVDPRICES"},
+        "NVDStandardEquipment": {"bq_table": "PRE_EMBARGO_LR_NVDSTANDARDEQUIPMENT"},
+        "NVDTechnical": {"bq_table": "PRE_EMBARGO_LR_NVDTECHNICAL"}
     }
 }
 
