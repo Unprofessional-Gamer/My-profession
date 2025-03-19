@@ -93,4 +93,24 @@ def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_
                     "FILENAME": filename,
                     "SOURCE_COUNT": source_count,
                     "RAW_RECORDS": 0, "CERT_RECORDS": 0, "ANALYTIC_RECORDS": 0,
-                    "RAW_FAILED_RECORDS": 0, "CERT_FAILED_RECORDS": 0,
+                    "RAW_FAILED_RECORDS": 0, "CERT_FAILED_RECORDS": 0, "ANALYTIC_FAILED_RECORDS": 0,
+                    "RAW_COLUMN": 0, "CERT_COLUMN": 0, "ANALYTIC_COLUMN": 0,
+                    "ANALYTIC_col_sums": [],
+                    "BQ_STATUS": "", "BQ_FAILED": 0, "REASON": ""
+                }
+
+            if zone == "RAW":
+                records[filename].update({"RAW_RECORDS": record_count, "RAW_COLUMN": column_count, "RAW_FAILED_RECORDS": source_count - record_count})
+            elif zone == "CERT":
+                records[filename].update({"CERT_RECORDS": record_count, "CERT_COLUMN": column_count, "CERT_FAILED_RECORDS": records[filename]["RAW_RECORDS"] - record_count})
+            elif zone == "ANALYTIC":
+                records[filename].update({"ANALYTIC_RECORDS": record_count, "ANALYTIC_COLUMN": column_count, "ANALYTIC_FAILED_RECORDS": records[filename]["CERT_RECORDS"] - record_count, "ANALYTIC_col_sums": column_sums})
+
+    if bq_table_name:
+        logging.info(f"Calling analytic_to_bq_checking for table: {bq_table_name}")
+        records = analytic_to_bq_checking(buckets_info["ANALYTIC"], dataset, project_id, records, bq_table_name)
+    else:
+        logging.warning("No bq_table_name found. Skipping analytic_to_bq_checking.")
+
+    logging.info(f"Finished process_files for dataset: {dataset}")
+    return list(records.values())
