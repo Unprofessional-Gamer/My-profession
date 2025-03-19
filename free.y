@@ -1,38 +1,35 @@
-import logging
-from datetime import datetime
 from google.cloud import storage, bigquery
 from io import StringIO
+import os
 import pandas as pd
+import sys
+import logging
+from datetime import datetime
 import apache_beam as beam
 from apache_beam.io.gcp.gcsio import GcsIO
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io.gcp.bigquery import WriteToBigQuery, BigQueryDisposition
+import schema.book_schema as reco
 
-# Dataset mapping with updated keys
+# Updated dataset mapping for proper file-to-table resolution
 dataset_mapping = {
     "PRE_EMBARGO_LR": {
-        "files": [
-            "PreEmbargoed_Land_Rover_CAPVehicles.csv",
-            "PreEmbargoed_Land_Rover_CapDer.csv",
-            "PreEmbargoed_Land_Rover_NVDGenericStatus.csv",
-            "PreEmbargoed_Land_Rover_NVDModelYear.csv",
-            "PreEmbargoed_Land_Rover_NVDOptions.csv",
-            "PreEmbargoed_Land_Rover_NVDPrices.csv",
-            "PreEmbargoed_Land_Rover_NVDStandardEquipment.csv",
-            "PreEmbargoed_Land_Rover_NVDTechnical.csv"
-        ],
-        "CAPVehicles": {"bq_table": "PRE_EMBARGO_LR_CAPVEHICLES"},
-        "CapDer": {"bq_table": "PRE_EMBARGO_LR_CAPDER"},
-        "NVDGenericStatus": {"bq_table": "PRE_EMBARGO_LR_NDVGENERICSTATUS"},
-        "NVDModelYear": {"bq_table": "PRE_EMBARGO_LR_NVDMODELYEAR"},
-        "NVDOptions": {"bq_table": "PRE_EMBARGO_LR_NVDOPTIONS"},
-        "NVDPrices": {"bq_table": "PRE_EMBARGO_LR_NVDPRICES"},
-        "NVDStandardEquipment": {"bq_table": "PRE_EMBARGO_LR_NVDSTANDARDEQUIPMENT"},
-        "NVDTechnical": {"bq_table": "PRE_EMBARGO_LR_NVDTECHNICAL"}
-    }
+        "files": ["CapDer.csv", "NDVGenericStatus.csv", "NVDModelYear.csv", "Capvehicles.csv"],
+        "CapDer.csv": {"bq_table": "PRE_EMBARGO_LR_CAPDER"},
+        "NDVGenericStatus.csv": {"bq_table": "PRE_EMBARGO_LR_NDVGENERICSTATUS"},
+        "NVDModelYear.csv": {"bq_table": "PRE_EMBARGO_LR_NVDMODELYEAR"},
+        "Capvehicles.csv": {"bq_table": "PRE_EMBARGO_LR_CAPVEHICLES"},
+    },
+    "PRE_EMBARGO_J": {
+        "files": ["CapDer.csv", "NDVGenericStatus.csv", "NVDModelYear.csv", "Capvehicles.csv"],
+        "CapDer.csv": {"bq_table": "PRE_EMBARGO_J_CAPDER"},
+        "NDVGenericStatus.csv": {"bq_table": "PRE_EMBARGO_J_NDVGENERICSTATUS"},
+        "NVDModelYear.csv": {"bq_table": "PRE_EMBARGO_J_NVDMODELYEAR"},
+        "Capvehicles.csv": {"bq_table": "PRE_EMBARGO_J_CAPVEHICLES"},
+    },
 }
 
-# Function to get schema from BigQuery
+# Function to get BQ schema
 def get_bq_schema(project_id, dataset_id, table_id):
     bq_client = bigquery.Client(project=project_id)
     table_ref = bq_client.dataset(dataset_id).table(table_id)
@@ -40,43 +37,56 @@ def get_bq_schema(project_id, dataset_id, table_id):
     schema = table.schema
     return {field.name: field.field_type for field in schema}
 
-# Function to list CSV files in the GCS folder
-def list_files_in_folder(bucket_name, folder_path):
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blobs = bucket.list_blobs(prefix=folder_path)
-    files = [blob.name for blob in blobs if blob.name.endswith(".csv")]
-    logging.info(f"Found {len(files)} files in bucket {bucket_name}, folder {folder_path}: {files}")
-    return files
+# Function to check data consistency with BigQuery
+def analytical_to_bq_checking(ana_bucket_name, dataset, project_id, records, bq_table_name):
+    client = storage.Client(project=project_id)
+    fs = GcsIO(client)
+    ana_bucket = client.bucket(ana_bucket_name)
+    blob_list_ana = client.list_blobs(ana_bucket)
+
+    for blob_ana in blob_list_ana:
+        filename = blob_ana.name.split("/")[-1]
+        if dataset not in filename:
+            continue
+
+        with fs.open(f"gs://{ana_bucket_name}/{blob_ana.name}", mode="r") as pf:
+            ana_lines = pf.readlines()
+        ana_count = len(ana_lines) - 1  # Exclude header
+
+        QUERY = f"SELECT count(*) as count FROM `{project_id}.{bq_table_name}`"
+        bq_client = bigquery.Client(project_id)
+        query_job = bq_client.query(QUERY)
+        bq_count = next(query_job.result()).count
+
+        bq_status = "Match" if bq_count == ana_count else "Not Match"
+        bq_failed_count = abs(ana_count - bq_count)
+        reason = f"{bq_status}: ana_records({ana_count}) vs. BQ_count({bq_count})"
+
+        if filename in records:
+            records[filename].update(
+                {"BQ_STATUS": bq_status, "BQ_FAILED": bq_failed_count, "REASON": reason}
+            )
+
+    return records
 
 # Main function to process files
 def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_id):
     records = {}
     dataset_info = dataset_mapping.get(dataset, {})
-    prefix = "PreEmbargoed_Land_Rover_"
-    bq_table_map = dataset_info.get("tables", {})
 
     for zone, bucket_name in buckets_info.items():
-        logging.info(f"Processing zone: {zone}, bucket: {bucket_name}")
         files = list_files_in_folder(bucket_name, folder_path)
 
         for file in files:
             filename = file.split("/")[-1]
-            if not filename.startswith(prefix) or filename.endswith(("schema.csv", "metadata.csv")):
-                logging.info(f"Skipping file: {filename} (does not match prefix or is metadata/schema)")
-                continue
+            if filename not in dataset_info.get("files", []):
+                continue  # Skip files not in the dataset mapping
 
-            table_name_key = filename.replace(prefix, "").replace(".csv", "")
-            logging.info(f"Processing file: {filename}, table_name_key: {table_name_key}")
-
-            bq_table_name = bq_table_map.get(table_name_key, "")
+            bq_table_name = dataset_info.get(filename, {}).get("bq_table")
             if not bq_table_name:
-                logging.warning(f"No table mapping found for file: {filename}")
-                continue
+                continue  # Skip if no BQ table is mapped
 
-            logging.info(f"Found table mapping: {bq_table_name} for file: {filename}")
             bq_schema = get_bq_schema(project_id, bq_dataset_id, bq_table_name)
-
             skip_header = (zone == "ANALYTIC")
             record_count, column_count, column_sums = get_record_count_and_sums(bucket_name, file, zone, skip_header, bq_schema)
             source_count = metadata_count(bucket_name, file) if zone == "RAW" else 0
@@ -92,25 +102,37 @@ def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_
                     "PROCESSED_DATE_TIME": processed_time,
                     "FILENAME": filename,
                     "SOURCE_COUNT": source_count,
-                    "RAW_RECORDS": 0, "CERT_RECORDS": 0, "ANALYTIC_RECORDS": 0,
-                    "RAW_FAILED_RECORDS": 0, "CERT_FAILED_RECORDS": 0, "ANALYTIC_FAILED_RECORDS": 0,
-                    "RAW_COLUMN": 0, "CERT_COLUMN": 0, "ANALYTIC_COLUMN": 0,
+                    "RAW_RECORDS": 0,
+                    "CERT_RECORDS": 0,
+                    "ANALYTIC_RECORDS": 0,
+                    "RAW_FAILED_RECORDS": 0,
+                    "CERT_FAILED_RECORDS": 0,
+                    "ANALYTIC_FAILED_RECORDS": 0,
+                    "RAW_COLUMN": 0,
+                    "CERT_COLUMN": 0,
+                    "ANALYTIC_COLUMN": 0,
                     "ANALYTIC_col_sums": [],
-                    "BQ_STATUS": "", "BQ_FAILED": 0, "REASON": ""
+                    "BQ_STATUS": "",
+                    "BQ_FAILED": 0,
+                    "REASON": "",
                 }
 
             if zone == "RAW":
-                records[filename].update({"RAW_RECORDS": record_count, "RAW_COLUMN": column_count, "RAW_FAILED_RECORDS": source_count - record_count})
+                records[filename].update(
+                    {"RAW_RECORDS": record_count, "RAW_COLUMN": column_count, "RAW_FAILED_RECORDS": source_count - record_count}
+                )
             elif zone == "CERT":
-                records[filename].update({"CERT_RECORDS": record_count, "CERT_COLUMN": column_count, "CERT_FAILED_RECORDS": records[filename]["RAW_RECORDS"] - record_count})
+                records[filename].update(
+                    {"CERT_RECORDS": record_count, "CERT_COLUMN": column_count, "CERT_FAILED_RECORDS": records[filename]["RAW_RECORDS"] - record_count}
+                )
             elif zone == "ANALYTIC":
-                records[filename].update({"ANALYTIC_RECORDS": record_count, "ANALYTIC_COLUMN": column_count, "ANALYTIC_FAILED_RECORDS": records[filename]["CERT_RECORDS"] - record_count, "ANALYTIC_col_sums": column_sums})
+                records[filename].update(
+                    {"ANALYTIC_RECORDS": record_count, "ANALYTIC_COLUMN": column_count, "ANALYTIC_FAILED_RECORDS": records[filename]["CERT_RECORDS"] - record_count, "ANALYTIC_col_sums": column_sums}
+                )
 
+    # Ensure the BQ checking function is called with a valid table
     if bq_table_name:
-        logging.info(f"Calling analytic_to_bq_checking for table: {bq_table_name}")
-        records = analytic_to_bq_checking(buckets_info["ANALYTIC"], dataset, project_id, records, bq_table_name)
-    else:
-        logging.warning("No bq_table_name found. Skipping analytic_to_bq_checking.")
+        records = analytical_to_bq_checking(buckets_info["ANALYTIC"], dataset, project_id, records, bq_table_name)
 
-    logging.info(f"Finished process_files for dataset: {dataset}")
     return list(records.values())
+
