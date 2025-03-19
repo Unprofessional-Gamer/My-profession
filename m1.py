@@ -1,3 +1,26 @@
+dataset_mapping = {
+    "PRE_EMBARGO_LR": {
+        "files": [
+            "PreEmbargoed_Land_Rover_CAPVehicles.csv",
+            "PreEmbargoed_Land_Rover_CapDer.csv",
+            "PreEmbargoed_Land_Rover_NVDGenericStatus.csv",
+            "PreEmbargoed_Land_Rover_NVDModelYear.csv",
+            "PreEmbargoed_Land_Rover_NVDOptions.csv",
+            "PreEmbargoed_Land_Rover_NVDPrices.csv",
+            "PreEmbargoed_Land_Rover_NVDStandardEquipment.csv",
+            "PreEmbargoed_Land_Rover_NVDTechnical.csv"
+        ],
+        "PreEmbargoed_Land_Rover_CAPVehicles.csv": {"bq_table": "PRE_EMBARGO_LR_CAPVEHICLES"},
+        "PreEmbargoed_Land_Rover_CapDer.csv": {"bq_table": "PRE_EMBARGO_LR_CAPDER"},
+        "PreEmbargoed_Land_Rover_NVDGenericStatus.csv": {"bq_table": "PRE_EMBARGO_LR_NDVGENERICSTATUS"},
+        "PreEmbargoed_Land_Rover_NVDModelYear.csv": {"bq_table": "PRE_EMBARGO_LR_NVDMODELYEAR"},
+        "PreEmbargoed_Land_Rover_NVDOptions.csv": {"bq_table": "PRE_EMBARGO_LR_NVDOPTIONS"},
+        "PreEmbargoed_Land_Rover_NVDPrices.csv": {"bq_table": "PRE_EMBARGO_LR_NVDPRICES"},
+        "PreEmbargoed_Land_Rover_NVDStandardEquipment.csv": {"bq_table": "PRE_EMBARGO_LR_NVDSTANDARDEQUIPMENT"},
+        "PreEmbargoed_Land_Rover_NVDTechnical.csv": {"bq_table": "PRE_EMBARGO_LR_NVDTECHNICAL"}
+    }
+}
+
 def process_files(_, buckets_info, folder_path, dataset, project_id, bq_dataset_id):
     records = {}
     dataset_info = dataset_mapping.get(dataset, {})
