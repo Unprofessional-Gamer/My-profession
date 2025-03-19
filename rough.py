@@ -9,6 +9,7 @@ import apache_beam as beam
 from apache_beam.io.gcp.gcsio import GcsIO
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io.gcp.bigquery import WriteToBigQuery, BigQueryDisposition
+from google.api_core.exceptions import NotFound, GoogleAPIError
 import schema.book_schema as reco
 
 # Dataset mapping without hardcoded schema
@@ -36,11 +37,16 @@ def load_env_config():
 
 # Function to get schema from BigQuery
 def get_bq_schema(project_id, dataset_id, table_id):
-    bq_client = bigquery.Client(project=project_id)
-    table_ref = bq_client.dataset(dataset_id).table(table_id)
-    table = bq_client.get_table(table_ref)
-    schema = table.schema
-    return {field.name: field.field_type for field in schema}
+    try:
+        bq_client = bigquery.Client(project=project_id)
+        table_ref = bq_client.dataset(dataset_id).table(table_id)
+        table = bq_client.get_table(table_ref)
+        schema = table.schema
+        return {field.name: field.field_type for field in schema}
+    except NotFound:
+        raise Exception(f"Table {dataset_id}.{table_id} not found in project {project_id}")
+    except GoogleAPIError as e:
+        raise Exception(f"BigQuery API error: {e}")
 
 # Function to get column names from BigQuery schema
 def get_bq_column_names(bq_schema, exclude_columns=[]):
@@ -48,16 +54,26 @@ def get_bq_column_names(bq_schema, exclude_columns=[]):
 
 # Function to get metadata record count
 def metadata_count(bucket_name, metadata_file):
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    metadatafile = metadata_file[:-4] + ".metadata.csv"
-    blob = bucket.blob(metadatafile)
-    if not blob.exists():
-        return 0
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        metadatafile = metadata_file[:-4] + ".metadata.csv"
+        blob = bucket.blob(metadatafile)
+        if not blob.exists():
+            return 0
 
-    content = blob.download_as_text()
-    df = pd.read_csv(StringIO(content))
-    return int(df[df['Key'] == 'Total Records']['Value'].values[0])
+        content = blob.download_as_text()
+        df = pd.read_csv(StringIO(content))
+        if 'Key' not in df.columns or 'Value' not in df.columns:
+            raise Exception("Metadata file is missing required columns: 'Key' and 'Value'")
+        
+        total_records = df[df['Key'] == 'Total Records']['Value'].values
+        if len(total_records) == 0:
+            return 0
+        return int(total_records[0])
+    except Exception as e:
+        logging.error(f"Error processing metadata file {metadatafile}: {e}")
+        return 0
 
 def check_received_folder(project_id, raw_bucket, cap_hpi_path):
     client = storage.Client(project=project_id)
