@@ -15,6 +15,14 @@ from apache_beam.transforms.util import BatchElements
 import csv
 import io
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s: %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 recon_consilidated_schema = {
     "fields": [
         {"name": "DATASET", "type": "STRING", "mode": "NULLABLE"},
@@ -80,6 +88,7 @@ def load_env_config():
 
 # Function to get schema from BigQuery
 def get_bq_schema(project_id, dataset_id, table_id):
+    logger.info(f"Getting schema for {project_id}.{dataset_id}.{table_id}")
     bq_client = bigquery.Client(project=project_id)
     table_ref = bq_client.dataset(dataset_id).table(table_id)
     table = bq_client.get_table(table_ref)
@@ -92,40 +101,56 @@ def get_bq_column_names(bq_schema, exclude_columns=[]):
 
 # Function to get metadata record count - optimized to use streaming
 def metadata_count(bucket_name, metadata_file):
+    logger.info(f"Getting metadata count for {metadata_file}")
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     metadatafile = metadata_file[:-4] + ".metadata.csv"
     blob = bucket.blob(metadatafile)
     if not blob.exists():
+        logger.warning(f"Metadata file {metadatafile} not found")
         return 0
 
     content = blob.download_as_text()
     for line in content.splitlines():
         if 'Total Records' in line:
-            return int(line.split(',')[1])
+            count = int(line.split(',')[1])
+            logger.info(f"Metadata count: {count}")
+            return count
+    logger.warning(f"No 'Total Records' found in metadata file {metadatafile}")
     return 0
 
 # Function to check received folder - optimized
 def check_received_folder(project_id, raw_bucket, cap_hpi_path, dataset, folder_base):
+    logger.info(f"Checking received folder for {dataset} in {folder_base}")
     client = storage.Client(project=project_id)
     received_dates = []
     received_path = f'{cap_hpi_path}/{dataset}/{folder_base}/Files/'
+    logger.info(f"Looking for files in {received_path}")
     received_list = client.list_blobs(raw_bucket, prefix=received_path)
     for blob in received_list:
         if blob.name.endswith('.csv') and 'metadata' not in blob.name and 'schema' not in blob.name:
-            received_dates.append(blob.name.split('/')[-2])
-    return max(set(received_dates)) if received_dates else None
+            date = blob.name.split('/')[-2]
+            received_dates.append(date)
+    if received_dates:
+        latest_date = max(set(received_dates))
+        logger.info(f"Latest date found: {latest_date}")
+        return latest_date
+    logger.warning(f"No dates found in {received_path}")
+    return None
 
 # Function to list CSV files in the GCS folder - optimized
 def list_files_in_folder(bucket_name, folder_path):
+    logger.info(f"Listing all files in folder: {folder_path}")
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     blobs = bucket.list_blobs(prefix=folder_path)
     files = [blob.name for blob in blobs if blob.name.endswith(".csv")]
+    logger.info(f"Found {len(files)} CSV files.")
     return files
 
 # Stream-based record counting and column sum calculation
 def process_csv_stream(bucket_name, file_path, zone, skip_header, bq_schema):
+    logger.info(f"Processing {file_path} in {zone} zone")
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(file_path)
@@ -165,6 +190,7 @@ def process_csv_stream(bucket_name, file_path, zone, skip_header, bq_schema):
         formatted_sums = [{"column_name": col, "sum_value": str(column_sums[col])} 
                          for col in column_names if col in bq_schema]
     
+    logger.info(f"Processed {record_count} records in {file_path}")
     return record_count, column_count, formatted_sums
 
 # Beam DoFn for processing files
@@ -177,6 +203,7 @@ class ProcessFileDoFn(beam.DoFn):
         self.prefix = self.dataset_info.get("prefix", "")
         self.bq_table_map = self.dataset_info.get("tables", {})
         self.records = {}
+        logger.info(f"Initialized ProcessFileDoFn for dataset {dataset} with prefix {self.prefix}")
     
     def process(self, element):
         file_path, zone, bucket_name = element
@@ -185,11 +212,16 @@ class ProcessFileDoFn(beam.DoFn):
         if not filename.startswith(self.prefix) or filename.endswith(("schema.csv", "metadata.csv")):
             return
         
+        logger.info(f"Processing file: {filename} in {zone} zone")
+        
         table_name_key = filename.replace(self.prefix, "").replace(".csv", "")
         bq_table_name = self.bq_table_map.get(table_name_key, "")
         
         if not bq_table_name:
+            logger.warning(f"No matching table found for {filename}")
             return
+        
+        logger.info(f"Found matching table: {bq_table_name}")
         
         bq_schema = get_bq_schema(self.project_id, self.bq_dataset_id, bq_table_name)
         
@@ -221,12 +253,14 @@ class ProcessFileDoFn(beam.DoFn):
                 "RAW_COLUMN": column_count, 
                 "RAW_FAILED_RECORDS": source_count - record_count
             })
+            logger.info(f"Updated RAW stats for {filename}: {record_count} records, {column_count} columns")
         elif zone == "CERT":
             self.records[filename].update({
                 "CERT_RECORDS": record_count, 
                 "CERT_COLUMN": column_count, 
                 "CERT_FAILED_RECORDS": self.records[filename]["RAW_RECORDS"] - record_count
             })
+            logger.info(f"Updated CERT stats for {filename}: {record_count} records, {column_count} columns")
         elif zone == "ANALYTIC":
             # Get BigQuery count
             QUERY = f"SELECT count(*) as count FROM `{self.project_id}.{bq_table_name}`"
@@ -238,6 +272,8 @@ class ProcessFileDoFn(beam.DoFn):
             bq_failed_count = abs(ana_count - bq_count)
             reason = f"{bq_status}: ana_records({ana_count}) vs. BQ_count({bq_count})"
             
+            logger.info(f"BigQuery count for {bq_table_name}: {bq_count}, Analytic count: {ana_count}")
+            
             self.records[filename].update({
                 "ANALYTIC_RECORDS": record_count, 
                 "ANALYTIC_COLUMN": column_count, 
@@ -247,21 +283,34 @@ class ProcessFileDoFn(beam.DoFn):
                 "BQ_FAILED": bq_failed_count, 
                 "REASON": reason
             })
+            logger.info(f"Updated ANALYTIC stats for {filename}: {record_count} records, {column_count} columns, BQ status: {bq_status}")
     
     def finish_bundle(self):
+        logger.info(f"Finishing bundle with {len(self.records)} records")
         for record in self.records.values():
+            logger.info(f"Yielding record for {record['FILENAME']}")
             yield record
 
 # Beam DoFn for preparing file paths
 class PrepareFilePathsDoFn(beam.DoFn):
     def process(self, element):
         folder_path, zone, bucket_name = element
+        logger.info(f"Preparing file paths for {folder_path} in {zone} zone")
         files = list_files_in_folder(bucket_name, folder_path)
         for file_path in files:
+            logger.info(f"Yielding file path: {file_path}")
             yield (file_path, zone, bucket_name)
+
+# Beam DoFn for logging records
+class LogRecordsDoFn(beam.DoFn):
+    def process(self, record):
+        logger.info(f"Record: {record['FILENAME']} - RAW: {record['RAW_RECORDS']}, CERT: {record['CERT_RECORDS']}, ANALYTIC: {record['ANALYTIC_RECORDS']}, BQ_STATUS: {record['BQ_STATUS']}")
+        yield record
 
 # Run Apache Beam pipeline
 def run_pipeline(project_id, bq_dataset_id, dataset, folder_path, buckets_info, table_id):
+    logger.info(f"Starting pipeline for dataset {dataset}")
+    
     # Configure worker options to optimize memory usage
     worker_options = WorkerOptions(
         machine_type='n1-standard-4',  # Adjust based on your needs
@@ -289,15 +338,22 @@ def run_pipeline(project_id, bq_dataset_id, dataset, folder_path, buckets_info, 
         records = (file_paths 
                   | beam.ParDo(ProcessFileDoFn(project_id, bq_dataset_id, dataset)))
         
+        # Log records before writing to BigQuery
+        logged_records = (records | beam.ParDo(LogRecordsDoFn()))
+        
         # Write to BigQuery
-        (records 
+        (logged_records 
          | beam.io.WriteToBigQuery(
              table=f"{project_id}:{bq_dataset_id}.{table_id}", 
              schema=recon_consilidated_schema,
              create_disposition=BigQueryDisposition.CREATE_NEVER,
              write_disposition=BigQueryDisposition.WRITE_APPEND))
+    
+    logger.info(f"Pipeline completed for dataset {dataset}")
 
 if __name__ == "__main__":
+    logger.info(f"**********************{sys.argv[1] if len(sys.argv) > 1 else 'PRE_EMBARGO_LR'} Reconciliation started************")
+    
     env_config = load_env_config()
     dataset = sys.argv[1] if len(sys.argv) > 1 else "PRE_EMBARGO_LR"
     folder_base = "DAILY" if dataset in ["PRE_EMBARGO_LR","PRE_EMBARGO_J","CAP_NVD_CAR","CAP_NVD_LCV"] else "MONTHLY"
@@ -323,3 +379,5 @@ if __name__ == "__main__":
     
     # Run the optimized pipeline
     run_pipeline(project_id, bq_dataset_id, dataset, folder_path, buckets_info, table_id)
+    
+    logger.info(f"**********************{dataset} Reconciliation Finished****************")
