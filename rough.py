@@ -11,8 +11,6 @@ from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io.gcp.bigquery import WriteToBigQuery, BigQueryDisposition
 from apache_beam.io.fileio import MatchFiles, ReadMatches
 from apache_beam.io.textio import ReadFromText
-import csv
-import json
 
 recon_consilidated_schema = {
     "fields": [
@@ -32,7 +30,7 @@ recon_consilidated_schema = {
         {"name": "ANALYTIC_COLUMN", "type": "INTEGER", "mode": "NULLABLE"},
         {"name": "BQ_STATUS", "type": "STRING", "mode": "NULLABLE"},
         {"name": "BQ_FAILED", "type": "INTEGER", "mode": "NULLABLE"},
-        {"name": "ANALYTIC_col_sums", "type": "RECORD", "mode": "REPEATED", "fields": [
+        {"name": "ANALYTIC_COL_SUMS", "type": "RECORD", "mode": "REPEATED", "fields": [
             {"name": "column_name", "type": "STRING", "mode": "NULLABLE"},
             {"name": "sum_value", "type": "STRING", "mode": "NULLABLE"}
         ]},
@@ -75,7 +73,16 @@ dataset_mapping = {
 def load_env_config():
     import os
     from dotenv import load_dotenv, find_dotenv
-    load_dotenv
+    load_dotenv()
+    return {
+        'PROJECT': os.getenv('PROJECT'),
+        'RAW_ZONE': os.getenv('RAW_ZONE'),
+        'CERT_ZONE': os.getenv('CERT_ZONE'),
+        'ANALYTIC_ZONE': os.getenv('ANALYTIC_ZONE'),
+        'BQ_DATASET': os.getenv('BQ_DATASET'),
+        'CAP_PATH': os.getenv('CAP_PATH'),
+        'RECON_TABLE': os.getenv('RECON_TABLE')
+    }
 
 # Function to get schema from BigQuery
 def get_bq_schema(project_id, dataset_id, table_id):
@@ -112,105 +119,103 @@ def check_received_folder(project_id, raw_bucket, cap_hpi_path, dataset, folder_
             received_dates.append(blob.name.split('/')[-2])
     return max(set(received_dates)) if received_dates else None
 
-# Beam DoFn classes for processing
-class GetFileInfoFn(beam.DoFn):
-    def __init__(self, dataset, prefix, bq_table_map):
-        self.dataset = dataset
-        self.prefix = prefix
-        self.bq_table_map = bq_table_map
+# Beam DoFn for listing files in folder
+class ListFilesInFolderFn(beam.DoFn):
+    def __init__(self, bucket_name, folder_path):
+        self.bucket_name = bucket_name
+        self.folder_path = folder_path
+        
+    def process(self, element):
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(self.bucket_name)
+        blobs = bucket.list_blobs(prefix=self.folder_path)
+        for blob in blobs:
+            if blob.name.endswith(".csv"):
+                yield blob.name
+
+# Beam DoFn for getting record count and sums
+class GetRecordCountAndSumsFn(beam.DoFn):
+    def __init__(self, bucket_name, zone, skip_header, bq_schema):
+        self.bucket_name = bucket_name
+        self.zone = zone
+        self.skip_header = skip_header
+        self.bq_schema = bq_schema
         
     def process(self, file_path):
-        filename = file_path.split("/")[-1]
-        if not filename.startswith(self.prefix) or filename.endswith(("schema.csv", "metadata.csv")):
-            return
-            
-        table_name_key = filename.replace(self.prefix, "").replace(".csv", "")
-        bq_table_name = self.bq_table_map.get(table_name_key, "")
-        
-        if not bq_table_name:
-            return
-            
-        pick_date = file_path.split("/")[-2]
-        folder_date = f"{pick_date[:4]}-{pick_date[4:6]}-{pick_date[6:]}"
-        
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(self.bucket_name)
+        blob = bucket.blob(file_path)
+        content = blob.download_as_text()
+
+        column_names = get_bq_column_names(self.bq_schema)
+        df = pd.read_csv(StringIO(content), header=None, names=column_names, low_memory=False)
+
+        column_count = len(df.columns)
+        record_count = len(df) - (1 if self.skip_header else 0)
+
+        # Compute column sums if it's ANAL zone
+        column_sums = []
+        if self.zone == "ANAL":
+            numeric_columns = df.select_dtypes(include=["int64", "float64"]).columns
+            column_sums = [{"column_name": col, "sum_value": str(df[col].sum())} for col in numeric_columns if col in self.bq_schema]
+
         yield {
-            "file_path": file_path,
-            "filename": filename,
-            "folder_date": folder_date,
-            "bq_table_name": bq_table_name
+            'file_path': file_path,
+            'record_count': record_count,
+            'column_count': column_count,
+            'column_sums': column_sums
         }
 
-class ProcessFileFn(beam.DoFn):
-    def __init__(self, zone, project_id, bq_dataset_id, dataset):
-        self.zone = zone
+# Beam DoFn for processing files
+class ProcessFilesFn(beam.DoFn):
+    def __init__(self, dataset, project_id, bq_dataset_id, buckets_info):
+        self.dataset = dataset
         self.project_id = project_id
         self.bq_dataset_id = bq_dataset_id
-        self.dataset = dataset
+        self.buckets_info = buckets_info
+        self.records = {}
         
-    def process(self, file_info):
-        file_path = file_info["file_path"]
-        filename = file_info["filename"]
-        folder_date = file_info["folder_date"]
-        bq_table_name = file_info["bq_table_name"]
+    def process(self, element):
+        dataset_info = dataset_mapping.get(self.dataset, {})
+        prefix = dataset_info.get("prefix", "")
+        bq_table_map = dataset_info.get("tables", {})
         
-        # Get schema for this file
+        file_path = element['file_path']
+        zone = element['zone']
+        bucket_name = self.buckets_info[zone]
+        
+        filename = file_path.split("/")[-1]
+        if not filename.startswith(prefix) or filename.endswith(("schema.csv", "metadata.csv")):
+            return
+            
+        if self.dataset == "CAP_NVD_CAR" and filename.startswith("CAR_") and filename.endswith(".csv"):
+            parts = filename.replace(prefix, "").replace(".csv", "").split("_")
+            table_name_key = parts[-1]
+        elif self.dataset == "CAP_NVD_LCV" and filename.startswith("LIGHTS_") and filename.endswith(".csv"):
+            parts = filename.replace(prefix, "").replace(".csv", "").split("_")
+            table_name_key = parts[-1]
+        else:
+            table_name_key = filename.replace(prefix, "").replace(".csv", "")
+            
+        bq_table_name = bq_table_map.get(table_name_key, "")
+        
+        if not bq_table_name:
+            return  # Skip this file if table name is not found
+            
         bq_schema = get_bq_schema(self.project_id, self.bq_dataset_id, bq_table_name)
-        column_names = get_bq_column_names(bq_schema)
+        skip_header = (zone == "ANALYTIC")
         
-        # Process file in chunks using Beam's native file reading
-        storage_client = storage.Client()
-        bucket_name = file_path.split("/")[0]
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(file_path)
+        record_count = element['record_count']
+        column_count = element['column_count']
+        column_sums = element['column_sums']
         
-        # Get record count and column info
-        record_count = 0
-        column_sums = {}
+        source_count = metadata_count(bucket_name, file_path) if zone == "RAW" else 0
         
-        # Read file in chunks to avoid memory issues
-        content = blob.download_as_text()
-        reader = csv.reader(StringIO(content))
-        
-        # Skip header if needed
-        skip_header = (self.zone == "ANALYTIC")
-        if skip_header:
-            next(reader, None)
-            
-        # Process rows
-        for row in reader:
-            record_count += 1
-            
-            # For ANALYTIC zone, calculate column sums
-            if self.zone == "ANALYTIC":
-                for i, col_name in enumerate(column_names):
-                    if i < len(row):
-                        try:
-                            value = float(row[i])
-                            column_sums[col_name] = column_sums.get(col_name, 0) + value
-                        except (ValueError, TypeError):
-                            pass
-        
-        # Format column sums for output
-        formatted_sums = []
-        if self.zone == "ANALYTIC":
-            for col_name, sum_value in column_sums.items():
-                formatted_sums.append({
-                    "column_name": col_name,
-                    "sum_value": str(sum_value)
-                })
-        
-        # Get source count for RAW zone
-        source_count = 0
-        if self.zone == "RAW":
-            source_count = metadata_count(bucket_name, file_path)
-        
-        # Get BigQuery count for ANALYTIC zone
-        bq_count = 0
         bq_status = ""
         bq_failed_count = 0
         reason = ""
         
-        if self.zone == "ANALYTIC":
+        if zone == 'ANALYTIC':
             QUERY = f"SELECT count(*) as count FROM `{self.project_id}.{bq_table_name}`"
             bq_client = bigquery.Client(self.project_id)
             query_job = bq_client.query(QUERY)
@@ -219,178 +224,92 @@ class ProcessFileFn(beam.DoFn):
             bq_status = "Match" if bq_count == ana_count else "Not Match"
             bq_failed_count = abs(ana_count - bq_count)
             reason = f"{bq_status}: ana_records({ana_count}) vs. BQ_count({bq_count})"
-        
-        # Create record
+            
+        pick_date = file_path.split("/")[-2]
+        folder_date = f"{pick_date[:4]}-{pick_date[4:6]}-{pick_date[6:]}"
         processed_time = datetime.now().strftime("%d/%m/%Y T %H:%M:%S")
         
-        record = {
-            "DATASET": self.dataset,
-            "FILE_DATE": folder_date,
-            "PROCESSED_DATE_TIME": processed_time,
-            "FILENAME": filename,
-            "SOURCE_COUNT": source_count,
-            "RAW_RECORDS": 0,
-            "CERT_RECORDS": 0,
-            "ANALYTIC_RECORDS": 0,
-            "RAW_FAILED_RECORDS": 0,
-            "CERT_FAILED_RECORDS": 0,
-            "ANALYTIC_FAILED_RECORDS": 0,
-            "RAW_COLUMN": 0,
-            "CERT_COLUMN": 0,
-            "ANALYTIC_COLUMN": 0,
-            "ANALYTIC_col_sums": formatted_sums,
-            "BQ_STATUS": bq_status,
-            "BQ_FAILED": bq_failed_count,
-            "REASON": reason
-        }
-        
-        # Update zone-specific fields
-        if self.zone == "RAW":
-            record.update({
-                "RAW_RECORDS": record_count,
-                "RAW_COLUMN": len(column_names),
+        if filename not in self.records:
+            self.records[filename] = {
+                "DATASET": self.dataset,
+                "FILE_DATE": folder_date,
+                "PROCESSED_DATE_TIME": processed_time,
+                "FILENAME": filename,
+                "SOURCE_COUNT": source_count,
+                "RAW_RECORDS": 0, "CERT_RECORDS": 0, "ANALYTIC_RECORDS": 0,
+                "RAW_FAILED_RECORDS": 0, "CERT_FAILED_RECORDS": 0, "ANALYTIC_FAILED_RECORDS": 0,
+                "RAW_COLUMN": 0, "CERT_COLUMN": 0, "ANALYTIC_COLUMN": 0,
+                "ANALYTIC_COL_SUMS": [],
+                "BQ_STATUS": "", "BQ_FAILED": 0, "REASON": ""
+            }
+            
+        if zone == "RAW":
+            self.records[filename].update({
+                "RAW_RECORDS": record_count, 
+                "RAW_COLUMN": column_count, 
                 "RAW_FAILED_RECORDS": source_count - record_count
             })
-        elif self.zone == "CERT":
-            record.update({
-                "CERT_RECORDS": record_count,
-                "CERT_COLUMN": len(column_names),
-                "CERT_FAILED_RECORDS": 0  # Will be updated in the next step
+        elif zone == "CERT":
+            self.records[filename].update({
+                "CERT_RECORDS": record_count, 
+                "CERT_COLUMN": column_count, 
+                "CERT_FAILED_RECORDS": self.records[filename]["RAW_RECORDS"] - record_count
             })
-        elif self.zone == "ANALYTIC":
-            record.update({
-                "ANALYTIC_RECORDS": record_count,
-                "ANALYTIC_COLUMN": len(column_names),
-                "ANALYTIC_FAILED_RECORDS": 0,  # Will be updated in the next step
-                "BQ_STATUS": bq_status,
-                "BQ_FAILED": bq_failed_count,
+        elif zone == "ANALYTIC":
+            self.records[filename].update({
+                "ANALYTIC_RECORDS": record_count, 
+                "ANALYTIC_COLUMN": column_count, 
+                "ANALYTIC_FAILED_RECORDS": self.records[filename]["CERT_RECORDS"] - record_count, 
+                "ANALYTIC_COL_SUMS": column_sums, 
+                "BQ_STATUS": bq_status, 
+                "BQ_FAILED": bq_failed_count, 
                 "REASON": reason
             })
-        
-        yield record
-
-class CombineRecordsFn(beam.CombineFn):
-    def create_accumulator(self):
-        return {}
-    
-    def add_input(self, accumulator, record):
-        filename = record["FILENAME"]
-        
-        if filename not in accumulator:
-            accumulator[filename] = record
-        else:
-            # Update existing record with new zone data
-            if record["RAW_RECORDS"] > 0:
-                accumulator[filename]["RAW_RECORDS"] = record["RAW_RECORDS"]
-                accumulator[filename]["RAW_COLUMN"] = record["RAW_COLUMN"]
-                accumulator[filename]["RAW_FAILED_RECORDS"] = record["RAW_FAILED_RECORDS"]
-                accumulator[filename]["SOURCE_COUNT"] = record["SOURCE_COUNT"]
             
-            if record["CERT_RECORDS"] > 0:
-                accumulator[filename]["CERT_RECORDS"] = record["CERT_RECORDS"]
-                accumulator[filename]["CERT_COLUMN"] = record["CERT_COLUMN"]
-                accumulator[filename]["CERT_FAILED_RECORDS"] = record["CERT_FAILED_RECORDS"]
-            
-            if record["ANALYTIC_RECORDS"] > 0:
-                accumulator[filename]["ANALYTIC_RECORDS"] = record["ANALYTIC_RECORDS"]
-                accumulator[filename]["ANALYTIC_COLUMN"] = record["ANALYTIC_COLUMN"]
-                accumulator[filename]["ANALYTIC_FAILED_RECORDS"] = record["ANALYTIC_FAILED_RECORDS"]
-                accumulator[filename]["ANALYTIC_col_sums"] = record["ANALYTIC_col_sums"]
-                accumulator[filename]["BQ_STATUS"] = record["BQ_STATUS"]
-                accumulator[filename]["BQ_FAILED"] = record["BQ_FAILED"]
-                accumulator[filename]["REASON"] = record["REASON"]
-        
-        return accumulator
-    
-    def merge_accumulators(self, accumulators):
-        result = {}
-        for acc in accumulators:
-            for filename, record in acc.items():
-                if filename not in result:
-                    result[filename] = record
-                else:
-                    # Update existing record with new zone data
-                    if record["RAW_RECORDS"] > 0:
-                        result[filename]["RAW_RECORDS"] = record["RAW_RECORDS"]
-                        result[filename]["RAW_COLUMN"] = record["RAW_COLUMN"]
-                        result[filename]["RAW_FAILED_RECORDS"] = record["RAW_FAILED_RECORDS"]
-                        result[filename]["SOURCE_COUNT"] = record["SOURCE_COUNT"]
-                    
-                    if record["CERT_RECORDS"] > 0:
-                        result[filename]["CERT_RECORDS"] = record["CERT_RECORDS"]
-                        result[filename]["CERT_COLUMN"] = record["CERT_COLUMN"]
-                        result[filename]["CERT_FAILED_RECORDS"] = record["CERT_FAILED_RECORDS"]
-                    
-                    if record["ANALYTIC_RECORDS"] > 0:
-                        result[filename]["ANALYTIC_RECORDS"] = record["ANALYTIC_RECORDS"]
-                        result[filename]["ANALYTIC_COLUMN"] = record["ANALYTIC_COLUMN"]
-                        result[filename]["ANALYTIC_FAILED_RECORDS"] = record["ANALYTIC_FAILED_RECORDS"]
-                        result[filename]["ANALYTIC_col_sums"] = record["ANALYTIC_col_sums"]
-                        result[filename]["BQ_STATUS"] = record["BQ_STATUS"]
-                        result[filename]["BQ_FAILED"] = record["BQ_FAILED"]
-                        result[filename]["REASON"] = record["REASON"]
-        
-        return result
-    
-    def extract_output(self, accumulator):
-        # Calculate failed records
-        for filename, record in accumulator.items():
-            if record["CERT_RECORDS"] > 0 and record["RAW_RECORDS"] > 0:
-                record["CERT_FAILED_RECORDS"] = record["RAW_RECORDS"] - record["CERT_RECORDS"]
-            
-            if record["ANALYTIC_RECORDS"] > 0 and record["CERT_RECORDS"] > 0:
-                record["ANALYTIC_FAILED_RECORDS"] = record["CERT_RECORDS"] - record["ANALYTIC_RECORDS"]
-        
-        return list(accumulator.values())
+        # Only yield when we have processed all zones for a file
+        if all(zone in self.records[filename] for zone in ["RAW", "CERT", "ANALYTIC"]):
+            yield self.records[filename]
+            # Remove the record to free memory
+            del self.records[filename]
 
 # Run Apache Beam pipeline
-def run_pipeline(project_id, raw_bucket, cert_bucket, analytic_bucket, folder_path, dataset, bq_dataset_id, table_id):
+def run_pipeline(dataset, folder_path, project_id, bq_dataset_id, table_id, buckets_info):
     options = PipelineOptions()
-    
-    # Get dataset info
-    dataset_info = dataset_mapping.get(dataset, {})
-    prefix = dataset_info.get("prefix", "")
-    bq_table_map = dataset_info.get("tables", {})
-    
-    # Define bucket mappings
-    buckets_info = {
-        "RAW": raw_bucket,
-        "CERT": cert_bucket,
-        "ANALYTIC": analytic_bucket
-    }
     
     with beam.Pipeline(options=options) as p:
         # Create a PCollection for each zone
-        all_records = []
-        
         for zone, bucket_name in buckets_info.items():
-            # Create a pattern to match files in the bucket
-            pattern = f"gs://{bucket_name}/{folder_path}*.csv"
+            # List files in folder
+            files = (p | f"Create_{zone}" >> beam.Create([None])
+                      | f"ListFiles_{zone}" >> beam.ParDo(ListFilesInFolderFn(bucket_name, folder_path)))
             
-            # Read files and process them
-            records = (
-                p 
-                | f"ReadFiles_{zone}" >> beam.io.fileio.MatchFiles(pattern)
-                | f"GetFileInfo_{zone}" >> beam.ParDo(GetFileInfoFn(dataset, prefix, bq_table_map))
-                | f"ProcessFiles_{zone}" >> beam.ParDo(ProcessFileFn(zone, project_id, bq_dataset_id, dataset))
-            )
+            # Get record count and sums
+            file_stats = (files | f"GetStats_{zone}" >> beam.ParDo(
+                GetRecordCountAndSumsFn(
+                    bucket_name, 
+                    zone, 
+                    skip_header=(zone == "ANALYTIC"), 
+                    bq_schema=get_bq_schema(project_id, bq_dataset_id, "dummy_table")  # Will be updated in ProcessFilesFn
+                )
+            ))
             
-            all_records.append(records)
-        
-        # Combine all records
-        combined_records = (
-            all_records
-            | "FlattenRecords" >> beam.Flatten()
-            | "CombineRecords" >> beam.CombineGlobally(CombineRecordsFn())
-        )
-        
-        # Write to BigQuery
-        combined_records | "WriteToBigQuery" >> beam.io.WriteToBigQuery(
-            table=f"{project_id}:{bq_dataset_id}.{table_id}",
-            schema=recon_consilidated_schema,
-            create_disposition=BigQueryDisposition.CREATE_NEVER,
-            write_disposition=BigQueryDisposition.WRITE_APPEND
-        )
+            # Add zone information
+            file_stats_with_zone = (file_stats | f"AddZone_{zone}" >> beam.Map(
+                lambda x, z=zone: {**x, 'zone': z}
+            ))
+            
+            # Process files
+            processed_records = (file_stats_with_zone | f"ProcessFiles_{zone}" >> beam.ParDo(
+                ProcessFilesFn(dataset, project_id, bq_dataset_id, buckets_info)
+            ))
+            
+            # Write to BigQuery
+            (processed_records | f"WriteToBQ_{zone}" >> beam.io.WriteToBigQuery(
+                table=f"{project_id}:{bq_dataset_id}.{table_id}",
+                schema=recon_consilidated_schema,
+                create_disposition=BigQueryDisposition.CREATE_NEVER,
+                write_disposition=BigQueryDisposition.WRITE_APPEND
+            ))
 
 if __name__ == "__main__":
     env_config = load_env_config()
@@ -405,9 +324,13 @@ if __name__ == "__main__":
     cap_hpi_path = env_config.get("CAP_PATH")
     table_id = env_config.get("RECON_TABLE")
     
-    # Get the latest folder date
+    buckets_info = {
+        "RAW": raw_bucket,
+        "CERT": cert_bucket,
+        "ANALYTIC": analytic_bucket
+    }
+    
     month_folder = check_received_folder(project_id, raw_bucket, cap_hpi_path, dataset, folder_base)
     folder_path = f"{cap_hpi_path}/{folder_base}/"
-    
-    # Run the optimized pipeline
-    run_pipeline(project_id, raw_bucket, cert_bucket, analytic_bucket, folder_path, dataset, bq_dataset_id, table_id)
+
+    run_pipeline(dataset, folder_path, project_id, bq_dataset_id, table_id, buckets_info)
