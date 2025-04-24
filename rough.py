@@ -1,19 +1,32 @@
-def longest_common_subsequence(s1, s2):
-    m, n = len(s1), len(s2)
-    dp = [["" for _ in range(n + 1)] for _ in range(m + 1)]
+import os
+from google.cloud import storage
 
-    for i in range(m):
-        for j in range(n):
-            if s1[i] == s2[j]:
-                dp[i + 1][j + 1] = dp[i][j] + s1[i]
-            else:
-                dp[i + 1][j + 1] = max(dp[i + 1][j], dp[i][j + 1], key=len)
+def upload_folder_to_gcs(bucket_name, source_folder, destination_folder=""):
+    # Initialize client
+    client = storage.Client()
 
-    return dp[m][n]
+    # Get bucket
+    bucket = client.get_bucket(bucket_name)
 
-# Read input line, process and print result
-line = input().strip()
-if line:
-    str1, str2 = line.split(":")
-    result = longest_common_subsequence(str1, str2)
-    print(result)
+    # Walk through local folder
+    for root, _, files in os.walk(source_folder):
+        for file_name in files:
+            local_path = os.path.join(root, file_name)
+
+            # Define GCS path relative to the source folder
+            relative_path = os.path.relpath(local_path, source_folder)
+            gcs_path = os.path.join(destination_folder, relative_path)
+
+            # Upload
+            blob = bucket.blob(gcs_path)
+            blob.upload_from_filename(local_path)
+
+            print(f"Uploaded {local_path} to gs://{bucket_name}/{gcs_path}")
+
+# Example usage
+if __name__ == "__main__":
+    bucket_name = "your-gcs-bucket-name"
+    local_upload_folder = "upload"  # Make sure this folder exists and has files
+    gcs_folder = "optional-folder-in-gcs"  # Leave empty if not needed
+
+    upload_folder_to_gcs(bucket_name, local_upload_folder, gcs_folder)
